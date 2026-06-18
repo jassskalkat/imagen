@@ -59,6 +59,12 @@ impl JobRegistry {
     }
 
     /// Create a new job and return its ID.
+    ///
+    /// The job starts in `Queued` state and will be picked up by the background worker.
+    /// For tool handlers that process jobs inline, use [`create_job_running`] instead.
+    ///
+    /// [`create_job_running`]: JobRegistry::create_job_running
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn create_job(
         &self,
         kind: JobKind,
@@ -72,6 +78,40 @@ impl JobRegistry {
         let job = Job {
             id: id.clone(),
             status: JobStatus::Queued,
+            kind,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            prompt: prompt.to_string(),
+            results: Vec::new(),
+            error: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+
+        let mut jobs = self.jobs.write().await;
+        jobs.insert(id.clone(), job);
+        id
+    }
+
+    /// Create a new job already in `Running` state and return its ID.
+    ///
+    /// Use this from inline tool handlers that process the job themselves so
+    /// the background worker never sees a `Queued` entry and cannot pick it up.
+    /// This eliminates the TOCTOU window between `create_job` + `update_status`.
+    pub async fn create_job_running(
+        &self,
+        kind: JobKind,
+        provider: &str,
+        model: &str,
+        prompt: &str,
+    ) -> String {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now();
+
+        let job = Job {
+            id: id.clone(),
+            status: JobStatus::Running,
             kind,
             provider: provider.to_string(),
             model: model.to_string(),
