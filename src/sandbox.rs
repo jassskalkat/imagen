@@ -4,56 +4,13 @@ use crate::error::{ImagenError, Result};
 
 /// Validate that a given output path resolves within the allowed output directory.
 ///
-/// Since the target file may not yet exist, we canonicalize the parent directory
-/// and verify that the resulting path is within the allowed base.
+/// Since neither the target file nor its parent directories may exist yet,
+/// we walk both sides up to their nearest existing ancestor and canonicalize
+/// from there so symlinks (e.g. `/var` → `/private/var` on macOS) are
+/// resolved consistently on both sides before the prefix check.
 pub fn validate_output_path(path: &Path, output_dir: &str) -> Result<()> {
-    let output_base = std::fs::canonicalize(output_dir).unwrap_or_else(|_| {
-        // If the output_dir itself doesn't exist yet, use it as-is
-        Path::new(output_dir).to_path_buf()
-    });
-
-    // For the target path, canonicalize as much as possible.
-    // If the path exists, canonicalize it directly.
-    // Otherwise, canonicalize its nearest existing ancestor.
-    let resolved = if path.exists() {
-        std::fs::canonicalize(path).map_err(|e| {
-            ImagenError::InvalidInput(format!("Cannot resolve path '{}': {e}", path.display()))
-        })?
-    } else {
-        // Walk up to find an existing ancestor
-        let mut ancestor = path.to_path_buf();
-        let mut components_to_append = Vec::new();
-
-        loop {
-            if let Some(parent) = ancestor.parent() {
-                if parent.exists() {
-                    let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
-                        ImagenError::InvalidInput(format!(
-                            "Cannot resolve parent '{}': {e}",
-                            parent.display()
-                        ))
-                    })?;
-                    // Rebuild with the remaining component
-                    if let Some(file_name) = ancestor.file_name() {
-                        components_to_append.push(file_name.to_os_string());
-                    }
-                    let mut result = canonical_parent;
-                    for comp in components_to_append.into_iter().rev() {
-                        result = result.join(comp);
-                    }
-                    break result;
-                } else {
-                    if let Some(file_name) = ancestor.file_name() {
-                        components_to_append.push(file_name.to_os_string());
-                    }
-                    ancestor = parent.to_path_buf();
-                }
-            } else {
-                // Reached filesystem root without finding existing ancestor
-                break path.to_path_buf();
-            }
-        }
-    };
+    let output_base = resolve_existing_ancestor(Path::new(output_dir));
+    let resolved = resolve_existing_ancestor(path);
 
     if !resolved.starts_with(&output_base) {
         return Err(ImagenError::InvalidInput(format!(
@@ -64,6 +21,40 @@ pub fn validate_output_path(path: &Path, output_dir: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Walk a path up to its nearest existing ancestor, canonicalize that ancestor,
+/// then re-append the non-existing tail components.
+fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
+    if path.exists() {
+        return std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    }
+
+    let mut ancestor = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+
+    loop {
+        if let Some(parent) = ancestor.parent() {
+            if parent == ancestor {
+                // Hit the filesystem root; return as-is
+                return path.to_path_buf();
+            }
+            if let Some(name) = ancestor.file_name() {
+                tail.push(name.to_os_string());
+            }
+            ancestor = parent.to_path_buf();
+            if ancestor.exists() {
+                let mut result = std::fs::canonicalize(&ancestor)
+                    .unwrap_or(ancestor);
+                for component in tail.into_iter().rev() {
+                    result = result.join(component);
+                }
+                return result;
+            }
+        } else {
+            return path.to_path_buf();
+        }
+    }
 }
 
 /// Validate that an input file path is safe to read.
