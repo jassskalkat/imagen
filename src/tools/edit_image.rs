@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
+use crate::sandbox::validate_input_path;
 use crate::tools::generate_image::{parse_quality, parse_size};
 use crate::types::EditRequest;
 
@@ -37,6 +38,12 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     }
     if input.image_path.trim().is_empty() {
         return Err("image_path cannot be empty.".to_string());
+    }
+
+    // Validate input paths for path traversal and null bytes
+    validate_input_path(&input.image_path).map_err(|e| e.to_string())?;
+    if let Some(ref mask) = input.mask_path {
+        validate_input_path(mask).map_err(|e| e.to_string())?;
     }
 
     // Validate image file exists
@@ -120,7 +127,7 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
                     i as u32,
                     &fmt,
                 );
-                crate::artifacts::save_artifact(&path, &bytes)
+                crate::artifacts::save_artifact(&path, &bytes, &state.config.output_dir)
                     .await
                     .map_err(|e| format!("Failed to save artifact: {e}"))?;
 

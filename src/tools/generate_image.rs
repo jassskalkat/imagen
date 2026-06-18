@@ -151,7 +151,7 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
                     i as u32,
                     &fmt,
                 );
-                crate::artifacts::save_artifact(&path, &bytes)
+                crate::artifacts::save_artifact(&path, &bytes, &state.config.output_dir)
                     .await
                     .map_err(|e| format!("Failed to save artifact: {e}"))?;
 

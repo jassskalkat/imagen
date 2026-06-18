@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use reqwest::{multipart, Client};
 use serde_json::json;
+use std::time::Duration;
 use tracing::{debug, instrument};
 
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
+use crate::retry::with_retry;
 use crate::types::{
     EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo,
 };
@@ -52,7 +54,10 @@ impl AzureProvider {
             .to_string();
 
         Ok(Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .unwrap(),
             endpoint,
             deployment,
             api_key,
@@ -142,30 +147,43 @@ impl ImageProvider for AzureProvider {
 
         debug!(url = %self.generations_url(), "Sending generation request to Azure");
 
-        let response = self
-            .client
-            .post(&self.generations_url())
-            .header("api-key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let url = self.generations_url();
+        let model_owned = model.to_string();
+        with_retry(|| {
+            let client = &self.client;
+            let body = &body;
+            let url = &url;
+            let model_owned = &model_owned;
+            async move {
+                let response = client
+                    .post(url.as_str())
+                    .header("api-key", &self.api_key)
+                    .header("Content-Type", "application/json")
+                    .json(body)
+                    .send()
+                    .await?;
 
-        let status = response.status();
-        let response_body: serde_json::Value = response.json().await?;
+                let status = response.status();
+                let response_body: serde_json::Value = response.json().await?;
 
-        if !status.is_success() {
-            let error_msg = response_body["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown Azure error");
-            return Err(match status.as_u16() {
-                401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
-                429 => ImagenError::RateLimit(error_msg.to_string()),
-                _ => ImagenError::ProviderError(format!("Azure API error ({}): {}", status, error_msg)),
-            });
-        }
+                if !status.is_success() {
+                    let error_msg = response_body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Unknown Azure error");
+                    return Err(match status.as_u16() {
+                        401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
+                        429 => ImagenError::RateLimit(error_msg.to_string()),
+                        _ => ImagenError::ProviderError(format!(
+                            "Azure API error ({}): {}",
+                            status, error_msg
+                        )),
+                    });
+                }
 
-        self.parse_response(response_body, model)
+                self.parse_response(response_body, model_owned)
+            }
+        })
+        .await
     }
 
     #[instrument(skip(self, request), fields(provider = "azure"))]
@@ -175,18 +193,9 @@ impl ImageProvider for AzureProvider {
             .as_deref()
             .unwrap_or(&self.default_model);
 
-        let mut form = multipart::Form::new()
-            .text("prompt", request.prompt.clone())
-            .text("n", request.n.unwrap_or(1).to_string())
-            .text("response_format", "b64_json".to_string());
-
-        if let Some(ref size) = request.size {
-            form = form.text("size", size.as_str().to_string());
-        }
-
-        // Attach the first image file
-        if let Some(image_path) = request.image_paths.first() {
-            let image_bytes = tokio::fs::read(image_path).await.map_err(|e| {
+        // Read file bytes outside the retry loop
+        let image_bytes = if let Some(image_path) = request.image_paths.first() {
+            let bytes = tokio::fs::read(image_path).await.map_err(|e| {
                 ImagenError::FileError(format!("Failed to read image {}: {}", image_path, e))
             })?;
             let filename = std::path::Path::new(image_path)
@@ -194,13 +203,13 @@ impl ImageProvider for AzureProvider {
                 .and_then(|n| n.to_str())
                 .unwrap_or("image.png")
                 .to_string();
-            let part = multipart::Part::bytes(image_bytes).file_name(filename);
-            form = form.part("image", part);
-        }
+            Some((bytes, filename))
+        } else {
+            None
+        };
 
-        // Attach mask if provided
-        if let Some(ref mask_path) = request.mask_path {
-            let mask_bytes = tokio::fs::read(mask_path).await.map_err(|e| {
+        let mask_bytes = if let Some(ref mask_path) = request.mask_path {
+            let bytes = tokio::fs::read(mask_path).await.map_err(|e| {
                 ImagenError::FileError(format!("Failed to read mask {}: {}", mask_path, e))
             })?;
             let filename = std::path::Path::new(mask_path)
@@ -208,35 +217,75 @@ impl ImageProvider for AzureProvider {
                 .and_then(|n| n.to_str())
                 .unwrap_or("mask.png")
                 .to_string();
-            let part = multipart::Part::bytes(mask_bytes).file_name(filename);
-            form = form.part("mask", part);
-        }
+            Some((bytes, filename))
+        } else {
+            None
+        };
 
         debug!(url = %self.edits_url(), "Sending edit request to Azure");
 
-        let response = self
-            .client
-            .post(&self.edits_url())
-            .header("api-key", &self.api_key)
-            .multipart(form)
-            .send()
-            .await?;
+        let url = self.edits_url();
+        let model_owned = model.to_string();
+        let size = request.size.clone();
+        let prompt = request.prompt.clone();
+        let n = request.n.unwrap_or(1);
 
-        let status = response.status();
-        let response_body: serde_json::Value = response.json().await?;
+        with_retry(|| {
+            let client = &self.client;
+            let model_owned = &model_owned;
+            let image_bytes = &image_bytes;
+            let mask_bytes = &mask_bytes;
+            let url = &url;
+            let size = &size;
+            let prompt = &prompt;
+            async move {
+                let mut form = multipart::Form::new()
+                    .text("prompt", prompt.clone())
+                    .text("n", n.to_string())
+                    .text("response_format", "b64_json".to_string());
 
-        if !status.is_success() {
-            let error_msg = response_body["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown Azure error");
-            return Err(match status.as_u16() {
-                401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
-                429 => ImagenError::RateLimit(error_msg.to_string()),
-                _ => ImagenError::ProviderError(format!("Azure API error ({}): {}", status, error_msg)),
-            });
-        }
+                if let Some(ref size) = size {
+                    form = form.text("size", size.as_str().to_string());
+                }
 
-        self.parse_response(response_body, model)
+                if let Some((ref bytes, ref filename)) = *image_bytes {
+                    let part = multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                    form = form.part("image", part);
+                }
+
+                if let Some((ref bytes, ref filename)) = *mask_bytes {
+                    let part = multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                    form = form.part("mask", part);
+                }
+
+                let response = client
+                    .post(url.as_str())
+                    .header("api-key", &self.api_key)
+                    .multipart(form)
+                    .send()
+                    .await?;
+
+                let status = response.status();
+                let response_body: serde_json::Value = response.json().await?;
+
+                if !status.is_success() {
+                    let error_msg = response_body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Unknown Azure error");
+                    return Err(match status.as_u16() {
+                        401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
+                        429 => ImagenError::RateLimit(error_msg.to_string()),
+                        _ => ImagenError::ProviderError(format!(
+                            "Azure API error ({}): {}",
+                            status, error_msg
+                        )),
+                    });
+                }
+
+                self.parse_response(response_body, model_owned)
+            }
+        })
+        .await
     }
 
     fn get_models(&self) -> Vec<ModelInfo> {

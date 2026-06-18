@@ -186,7 +186,7 @@ async fn save_provider_response(
             .decode(&image.b64_json)
             .map_err(|e| crate::error::ImagenError::Internal(format!("Base64 decode error: {e}")))?;
 
-        let size_bytes = artifacts::save_artifact(&path, &bytes).await?;
+        let size_bytes = artifacts::save_artifact(&path, &bytes, &state.config.output_dir).await?;
 
         results.push(ImageResult {
             file_path: path.to_string_lossy().to_string(),

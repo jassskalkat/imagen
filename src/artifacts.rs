@@ -4,6 +4,7 @@ use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::error::{ImagenError, Result};
+use crate::sandbox::validate_output_path;
 use crate::types::OutputFormat;
 
 /// Generate a deterministic file path for a job artifact.
@@ -27,7 +28,12 @@ pub fn artifact_path(
 }
 
 /// Save image bytes to the artifact path, creating directories as needed.
-pub async fn save_artifact(path: &Path, data: &[u8]) -> Result<u64> {
+///
+/// Validates that the path is within the specified output_dir before writing.
+pub async fn save_artifact(path: &Path, data: &[u8], output_dir: &str) -> Result<u64> {
+    // Validate that the artifact path is within the output directory
+    validate_output_path(path, output_dir)?;
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await.map_err(|e| {
             ImagenError::FileError(format!(
@@ -107,7 +113,7 @@ mod tests {
         let path = dir.join("test-job").join("test.png");
 
         let data = b"fake image data";
-        let size = save_artifact(&path, data).await.unwrap();
+        let size = save_artifact(&path, data, dir.to_str().unwrap()).await.unwrap();
         assert_eq!(size, data.len() as u64);
 
         let read_back = read_artifact(&path).await.unwrap();

@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use reqwest::{multipart, Client};
 use serde_json::json;
+use std::time::Duration;
 use tracing::{debug, instrument};
 
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
+use crate::retry::with_retry;
 use crate::types::{
     EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo,
 };
@@ -32,20 +34,14 @@ impl OpenAIProvider {
             .to_string();
 
         Ok(Self {
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(Duration::from_secs(120))
+                .build()
+                .unwrap(),
             api_key,
             org_id: config.openai_org_id.clone(),
             default_model: config.default_model.clone(),
         })
-    }
-
-    fn auth_headers(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        let builder = builder.header("Authorization", format!("Bearer {}", self.api_key));
-        if let Some(ref org_id) = self.org_id {
-            builder.header("OpenAI-Organization", org_id)
-        } else {
-            builder
-        }
     }
 
     fn parse_response(
@@ -116,32 +112,47 @@ impl ImageProvider for OpenAIProvider {
 
         debug!(url = OPENAI_GENERATIONS_URL, "Sending generation request to OpenAI");
 
-        let request_builder = self
-            .client
-            .post(OPENAI_GENERATIONS_URL)
-            .header("Content-Type", "application/json")
-            .json(&body);
+        let model_owned = model.to_string();
+        with_retry(|| {
+            let client = &self.client;
+            let body = &body;
+            let model_owned = &model_owned;
+            async move {
+                let request_builder = client
+                    .post(OPENAI_GENERATIONS_URL)
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .json(body);
 
-        let response = self.auth_headers(request_builder).send().await?;
+                let request_builder = if let Some(ref org_id) = self.org_id {
+                    request_builder.header("OpenAI-Organization", org_id)
+                } else {
+                    request_builder
+                };
 
-        let status = response.status();
-        let response_body: serde_json::Value = response.json().await?;
+                let response = request_builder.send().await?;
 
-        if !status.is_success() {
-            let error_msg = response_body["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown OpenAI error");
-            return Err(match status.as_u16() {
-                401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
-                429 => ImagenError::RateLimit(error_msg.to_string()),
-                _ => ImagenError::ProviderError(format!(
-                    "OpenAI API error ({}): {}",
-                    status, error_msg
-                )),
-            });
-        }
+                let status = response.status();
+                let response_body: serde_json::Value = response.json().await?;
 
-        self.parse_response(response_body, model)
+                if !status.is_success() {
+                    let error_msg = response_body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Unknown OpenAI error");
+                    return Err(match status.as_u16() {
+                        401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
+                        429 => ImagenError::RateLimit(error_msg.to_string()),
+                        _ => ImagenError::ProviderError(format!(
+                            "OpenAI API error ({}): {}",
+                            status, error_msg
+                        )),
+                    });
+                }
+
+                self.parse_response(response_body, model_owned)
+            }
+        })
+        .await
     }
 
     #[instrument(skip(self, request), fields(provider = "openai"))]
@@ -151,19 +162,9 @@ impl ImageProvider for OpenAIProvider {
             .as_deref()
             .unwrap_or(&self.default_model);
 
-        let mut form = multipart::Form::new()
-            .text("model", model.to_string())
-            .text("prompt", request.prompt.clone())
-            .text("n", request.n.unwrap_or(1).to_string())
-            .text("response_format", "b64_json".to_string());
-
-        if let Some(ref size) = request.size {
-            form = form.text("size", size.as_str().to_string());
-        }
-
-        // Attach the first image file
-        if let Some(image_path) = request.image_paths.first() {
-            let image_bytes = tokio::fs::read(image_path).await.map_err(|e| {
+        // Read file bytes outside the retry loop
+        let image_bytes = if let Some(image_path) = request.image_paths.first() {
+            let bytes = tokio::fs::read(image_path).await.map_err(|e| {
                 ImagenError::FileError(format!("Failed to read image {}: {}", image_path, e))
             })?;
             let filename = std::path::Path::new(image_path)
@@ -171,13 +172,13 @@ impl ImageProvider for OpenAIProvider {
                 .and_then(|n| n.to_str())
                 .unwrap_or("image.png")
                 .to_string();
-            let part = multipart::Part::bytes(image_bytes).file_name(filename);
-            form = form.part("image", part);
-        }
+            Some((bytes, filename))
+        } else {
+            None
+        };
 
-        // Attach mask if provided
-        if let Some(ref mask_path) = request.mask_path {
-            let mask_bytes = tokio::fs::read(mask_path).await.map_err(|e| {
+        let mask_bytes = if let Some(ref mask_path) = request.mask_path {
+            let bytes = tokio::fs::read(mask_path).await.map_err(|e| {
                 ImagenError::FileError(format!("Failed to read mask {}: {}", mask_path, e))
             })?;
             let filename = std::path::Path::new(mask_path)
@@ -185,34 +186,80 @@ impl ImageProvider for OpenAIProvider {
                 .and_then(|n| n.to_str())
                 .unwrap_or("mask.png")
                 .to_string();
-            let part = multipart::Part::bytes(mask_bytes).file_name(filename);
-            form = form.part("mask", part);
-        }
+            Some((bytes, filename))
+        } else {
+            None
+        };
 
         debug!(url = OPENAI_EDITS_URL, "Sending edit request to OpenAI");
 
-        let request_builder = self.client.post(OPENAI_EDITS_URL).multipart(form);
+        let model_owned = model.to_string();
+        let size = request.size.clone();
+        let prompt = request.prompt.clone();
+        let n = request.n.unwrap_or(1);
 
-        let response = self.auth_headers(request_builder).send().await?;
+        with_retry(|| {
+            let client = &self.client;
+            let model_owned = &model_owned;
+            let image_bytes = &image_bytes;
+            let mask_bytes = &mask_bytes;
+            let size = &size;
+            let prompt = &prompt;
+            async move {
+                let mut form = multipart::Form::new()
+                    .text("model", model_owned.to_string())
+                    .text("prompt", prompt.clone())
+                    .text("n", n.to_string())
+                    .text("response_format", "b64_json".to_string());
 
-        let status = response.status();
-        let response_body: serde_json::Value = response.json().await?;
+                if let Some(ref size) = size {
+                    form = form.text("size", size.as_str().to_string());
+                }
 
-        if !status.is_success() {
-            let error_msg = response_body["error"]["message"]
-                .as_str()
-                .unwrap_or("Unknown OpenAI error");
-            return Err(match status.as_u16() {
-                401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
-                429 => ImagenError::RateLimit(error_msg.to_string()),
-                _ => ImagenError::ProviderError(format!(
-                    "OpenAI API error ({}): {}",
-                    status, error_msg
-                )),
-            });
-        }
+                if let Some((ref bytes, ref filename)) = *image_bytes {
+                    let part = multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                    form = form.part("image", part);
+                }
 
-        self.parse_response(response_body, model)
+                if let Some((ref bytes, ref filename)) = *mask_bytes {
+                    let part = multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
+                    form = form.part("mask", part);
+                }
+
+                let request_builder = client
+                    .post(OPENAI_EDITS_URL)
+                    .header("Authorization", format!("Bearer {}", self.api_key))
+                    .multipart(form);
+
+                let request_builder = if let Some(ref org_id) = self.org_id {
+                    request_builder.header("OpenAI-Organization", org_id)
+                } else {
+                    request_builder
+                };
+
+                let response = request_builder.send().await?;
+
+                let status = response.status();
+                let response_body: serde_json::Value = response.json().await?;
+
+                if !status.is_success() {
+                    let error_msg = response_body["error"]["message"]
+                        .as_str()
+                        .unwrap_or("Unknown OpenAI error");
+                    return Err(match status.as_u16() {
+                        401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
+                        429 => ImagenError::RateLimit(error_msg.to_string()),
+                        _ => ImagenError::ProviderError(format!(
+                            "OpenAI API error ({}): {}",
+                            status, error_msg
+                        )),
+                    });
+                }
+
+                self.parse_response(response_body, model_owned)
+            }
+        })
+        .await
     }
 
     fn get_models(&self) -> Vec<ModelInfo> {

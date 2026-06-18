@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
+use crate::sandbox::validate_input_path;
 use crate::types::EditRequest;
 
 /// Input parameters for the continue_edit_session tool.
@@ -45,8 +46,17 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
             )
         })?;
 
+    // Validate session's last image still exists and is safe
+    validate_input_path(&session.last_image_path).map_err(|e| {
+        format!(
+            "Session image no longer valid: {}",
+            e
+        )
+    })?;
+
     // Validate mask file if provided
     if let Some(ref mask) = input.mask_path {
+        validate_input_path(mask).map_err(|e| e.to_string())?;
         if !tokio::fs::metadata(mask)
             .await
             .map(|m| m.is_file())
@@ -102,7 +112,7 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
                     i as u32,
                     &fmt,
                 );
-                crate::artifacts::save_artifact(&path, &bytes)
+                crate::artifacts::save_artifact(&path, &bytes, &state.config.output_dir)
                     .await
                     .map_err(|e| format!("Failed to save artifact: {e}"))?;
 
