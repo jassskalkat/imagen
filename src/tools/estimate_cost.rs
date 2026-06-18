@@ -9,11 +9,11 @@ use crate::types::{ImageQuality, ImageSize};
 /// Input parameters for the estimate_cost tool.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EstimateCostInput {
-    /// Image size: "1024x1024", "1536x1024", "1024x1536", or "auto".
+    /// Image size: "1024x1024", "1536x1024", "1024x1536", "auto", or arbitrary "WxH".
     pub size: Option<String>,
-    /// Image quality: "standard" or "hd".
+    /// Image quality: "low", "medium", "high", "auto", "standard", or "hd".
     pub quality: Option<String>,
-    /// Number of images (1-4).
+    /// Number of images (1-10).
     pub n: Option<u8>,
     /// Operation type: "generate" or "edit".
     #[allow(dead_code)] // Part of the public API schema for future cost differentiation
@@ -31,8 +31,8 @@ pub async fn run(state: &AppState, input: EstimateCostInput) -> Result<String, S
         None => ImageQuality::default(),
     };
     let n = input.n.unwrap_or(1);
-    if n == 0 || n > 4 {
-        return Err("n must be between 1 and 4.".to_string());
+    if n == 0 || n > 10 {
+        return Err("n must be between 1 and 10.".to_string());
     }
 
     let provider_name = state.provider.provider_name();

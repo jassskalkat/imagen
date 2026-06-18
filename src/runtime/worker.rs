@@ -11,9 +11,7 @@ use crate::jobs::{JobKind, JobStatus};
 use crate::runtime::state::AppState;
 use crate::types::{GenerateRequest, ImageResult, OutputFormat};
 
-/// The background worker that processes queued image generation jobs.
-/// Polls the job registry for queued jobs, runs them through the configured
-/// provider, and respects the concurrency limit.
+/// Background worker that polls for queued image generation jobs and processes them.
 pub struct Worker {
     state: AppState,
     semaphore: Arc<Semaphore>,
@@ -188,6 +186,10 @@ async fn process_generate_job(
         format: Some(OutputFormat::Png),
         style: None,
         n: Some(1),
+        output_compression: None,
+        background: None,
+        moderation: None,
+        user: None,
     };
 
     let response = state.provider.generate(&request).await?;

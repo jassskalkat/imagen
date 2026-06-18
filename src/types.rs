@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Supported image sizes for generation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -12,16 +13,21 @@ pub enum ImageSize {
     Portrait,
     #[serde(rename = "auto")]
     Auto,
+    /// Arbitrary resolution (e.g. "1920x1080"). Both dimensions must be
+    /// divisible by 16, aspect ratio between 1:3 and 3:1, max 3840x2160.
+    #[serde(untagged)]
+    Custom(String),
 }
 
 impl ImageSize {
     /// Return the size string suitable for the API.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> Cow<'static, str> {
         match self {
-            ImageSize::Square => "1024x1024",
-            ImageSize::Landscape => "1536x1024",
-            ImageSize::Portrait => "1024x1536",
-            ImageSize::Auto => "auto",
+            ImageSize::Square => Cow::Borrowed("1024x1024"),
+            ImageSize::Landscape => Cow::Borrowed("1536x1024"),
+            ImageSize::Portrait => Cow::Borrowed("1024x1536"),
+            ImageSize::Auto => Cow::Borrowed("auto"),
+            ImageSize::Custom(s) => Cow::Owned(s.clone()),
         }
     }
 }
@@ -33,6 +39,18 @@ pub enum ImageQuality {
     #[default]
     Standard,
     Hd,
+    Low,
+    Medium,
+    High,
+    Auto,
+}
+
+/// Image background setting for gpt-image-2.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageBackground {
+    Opaque,
+    Auto,
 }
 
 /// Output format for generated images.
@@ -85,6 +103,10 @@ pub struct GenerateRequest {
     pub format: Option<OutputFormat>,
     pub style: Option<ImageStyle>,
     pub n: Option<u8>,
+    pub output_compression: Option<u8>,
+    pub background: Option<ImageBackground>,
+    pub moderation: Option<String>,
+    pub user: Option<String>,
 }
 
 /// Request to edit an existing image.
@@ -98,6 +120,10 @@ pub struct EditRequest {
     pub quality: Option<ImageQuality>,
     pub format: Option<OutputFormat>,
     pub n: Option<u8>,
+    pub output_compression: Option<u8>,
+    pub background: Option<ImageBackground>,
+    pub moderation: Option<String>,
+    pub user: Option<String>,
 }
 
 /// Normalized response from a provider.
@@ -141,6 +167,10 @@ mod tests {
         assert_eq!(ImageSize::Landscape.as_str(), "1536x1024");
         assert_eq!(ImageSize::Portrait.as_str(), "1024x1536");
         assert_eq!(ImageSize::Auto.as_str(), "auto");
+        assert_eq!(
+            ImageSize::Custom("1920x1080".to_string()).as_str(),
+            "1920x1080"
+        );
     }
 
     #[test]
@@ -160,11 +190,37 @@ mod tests {
             format: Some(OutputFormat::Png),
             style: Some(ImageStyle::Vivid),
             n: Some(1),
+            output_compression: None,
+            background: None,
+            moderation: None,
+            user: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();
         let parsed: GenerateRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.prompt, "A cat sitting on a mat");
         assert_eq!(parsed.size, Some(ImageSize::Square));
+    }
+
+    #[test]
+    fn test_image_background_serde() {
+        let bg = ImageBackground::Opaque;
+        let json = serde_json::to_value(&bg).unwrap();
+        assert_eq!(json, "opaque");
+
+        let bg = ImageBackground::Auto;
+        let json = serde_json::to_value(&bg).unwrap();
+        assert_eq!(json, "auto");
+    }
+
+    #[test]
+    fn test_image_quality_new_variants() {
+        assert_eq!(serde_json::to_value(&ImageQuality::Low).unwrap(), "low");
+        assert_eq!(
+            serde_json::to_value(&ImageQuality::Medium).unwrap(),
+            "medium"
+        );
+        assert_eq!(serde_json::to_value(&ImageQuality::High).unwrap(), "high");
+        assert_eq!(serde_json::to_value(&ImageQuality::Auto).unwrap(), "auto");
     }
 }

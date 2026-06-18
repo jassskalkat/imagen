@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
-use crate::tools::parse::{parse_quality, parse_size};
+use crate::tools::parse::{parse_background, parse_compression, parse_quality, parse_size};
 use crate::types::EditRequest;
 
 /// Input parameters for the edit_image tool.
@@ -13,14 +13,26 @@ use crate::types::EditRequest;
 pub struct EditImageInput {
     /// Path to the source image file to edit.
     pub image_path: String,
+    /// Additional image paths for multi-image edits (up to 16 total).
+    pub additional_image_paths: Option<Vec<String>>,
     /// Text prompt describing the desired edits.
     pub prompt: String,
     /// Optional path to a mask image (white areas will be edited).
     pub mask_path: Option<String>,
-    /// Image size: "1024x1024", "1536x1024", "1024x1536", or "auto".
+    /// Image size: "1024x1024", "1536x1024", "1024x1536", "auto", or arbitrary "WxH".
     pub size: Option<String>,
-    /// Image quality: "standard" or "hd".
+    /// Image quality: "low", "medium", "high", "auto", "standard", or "hd".
     pub quality: Option<String>,
+    /// Number of images to generate (1-10).
+    pub n: Option<u8>,
+    /// Output compression percentage (0-100).
+    pub output_compression: Option<u8>,
+    /// Image background: "opaque" or "auto".
+    pub background: Option<String>,
+    /// Content moderation level: "low" or "auto".
+    pub moderation: Option<String>,
+    /// User tracking identifier passed to the API.
+    pub user: Option<String>,
 }
 
 /// Output from the edit_image tool.
@@ -40,21 +52,44 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         return Err("image_path cannot be empty.".to_string());
     }
 
-    // Validate input paths for path traversal and null bytes
-    validate_input_path(&input.image_path)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Build combined image paths
+    let mut image_paths = vec![input.image_path.clone()];
+    if let Some(ref additional) = input.additional_image_paths {
+        image_paths.extend(additional.iter().cloned());
+    }
+    if image_paths.len() > 16 {
+        return Err("Total number of images cannot exceed 16.".to_string());
+    }
+
+    // Validate n
+    let n = input.n.unwrap_or(1);
+    if n == 0 || n > 10 {
+        return Err("n must be between 1 and 10.".to_string());
+    }
+
+    // Validate compression
+    let output_compression = match input.output_compression {
+        Some(c) => Some(parse_compression(c).map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    // Validate all input paths for path traversal and null bytes
+    for path in &image_paths {
+        validate_input_path(path).await.map_err(|e| e.to_string())?;
+    }
     if let Some(ref mask) = input.mask_path {
         validate_input_path(mask).await.map_err(|e| e.to_string())?;
     }
 
-    // Validate image file exists
-    if !tokio::fs::metadata(&input.image_path)
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false)
-    {
-        return Err(format!("Image file not found: '{}'", input.image_path));
+    // Validate all image files exist
+    for path in &image_paths {
+        if !tokio::fs::metadata(path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
+            return Err(format!("Image file not found: '{path}'"));
+        }
     }
 
     // Validate mask file if provided
@@ -74,6 +109,10 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     };
     let quality = match &input.quality {
         Some(q) => Some(parse_quality(q).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let background = match &input.background {
+        Some(b) => Some(parse_background(b).map_err(|e| e.to_string())?),
         None => None,
     };
 
@@ -97,13 +136,17 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     // Build edit request
     let request = EditRequest {
         prompt: input.prompt,
-        image_paths: vec![input.image_path.clone()],
+        image_paths: image_paths.clone(),
         mask_path: input.mask_path,
         model: Some(model),
         size,
         quality,
         format: None,
-        n: Some(1),
+        n: Some(n),
+        output_compression,
+        background,
+        moderation: input.moderation,
+        user: input.user,
     };
 
     // Submit to provider
@@ -181,7 +224,6 @@ mod tests {
                 usage: None,
             })
         }
-
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
             Ok(ProviderResponse {
                 images: vec![ImageData {
@@ -192,11 +234,9 @@ mod tests {
                 usage: None,
             })
         }
-
         fn get_models(&self) -> Vec<ModelInfo> {
             vec![]
         }
-
         fn provider_name(&self) -> &'static str {
             "mock"
         }
@@ -221,49 +261,38 @@ mod tests {
         AppState::new(config, Arc::new(MockProvider))
     }
 
-    #[tokio::test]
-    async fn test_empty_prompt_returns_error() {
-        let state = test_state();
-        let input = EditImageInput {
-            image_path: "/tmp/image.png".to_string(),
-            prompt: "   ".to_string(),
+    fn make_input(image_path: &str, prompt: &str) -> EditImageInput {
+        EditImageInput {
+            image_path: image_path.to_string(),
+            additional_image_paths: None,
+            prompt: prompt.to_string(),
             mask_path: None,
             size: None,
             quality: None,
-        };
-        let result = run(&state, input).await;
-        assert!(result.is_err());
+            n: None,
+            output_compression: None,
+            background: None,
+            moderation: None,
+            user: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_empty_prompt_returns_error() {
+        let result = run(&test_state(), make_input("/tmp/image.png", "   ")).await;
         assert!(result.unwrap_err().contains("Prompt cannot be empty"));
     }
 
     #[tokio::test]
     async fn test_empty_image_path_returns_error() {
-        let state = test_state();
-        let input = EditImageInput {
-            image_path: "".to_string(),
-            prompt: "Edit this".to_string(),
-            mask_path: None,
-            size: None,
-            quality: None,
-        };
-        let result = run(&state, input).await;
-        assert!(result.is_err());
+        let result = run(&test_state(), make_input("", "Edit this")).await;
         assert!(result.unwrap_err().contains("image_path cannot be empty"));
     }
 
     #[tokio::test]
     async fn test_nonexistent_image_path_returns_error() {
-        let state = test_state();
-        let input = EditImageInput {
-            image_path: "/tmp/nonexistent-imagen-test-image-xyz.png".to_string(),
-            prompt: "Edit this".to_string(),
-            mask_path: None,
-            size: None,
-            quality: None,
-        };
-        let result = run(&state, input).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let input = make_input("/tmp/nonexistent-imagen-test-image-xyz.png", "Edit this");
+        let err = run(&test_state(), input).await.unwrap_err();
         assert!(
             err.contains("not found") || err.contains("does not exist"),
             "Expected 'not found' error, got: {err}"
@@ -272,29 +301,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_nonexistent_mask_path_returns_error() {
-        // Create a temporary image file so image_path validation passes
         let tmp_image = std::env::temp_dir().join("imagen-edit-test-img.png");
         tokio::fs::write(&tmp_image, b"fake image data")
             .await
             .unwrap();
 
-        let state = test_state();
-        let input = EditImageInput {
-            image_path: tmp_image.to_string_lossy().to_string(),
-            prompt: "Edit this".to_string(),
-            mask_path: Some("/tmp/nonexistent-imagen-test-mask-xyz.png".to_string()),
-            size: None,
-            quality: None,
-        };
-        let result = run(&state, input).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let mut input = make_input(&tmp_image.to_string_lossy(), "Edit this");
+        input.mask_path = Some("/tmp/nonexistent-imagen-test-mask-xyz.png".to_string());
+        let err = run(&test_state(), input).await.unwrap_err();
         assert!(
             err.contains("not found") || err.contains("does not exist"),
             "Expected 'not found' error, got: {err}"
         );
-
-        // Cleanup
         let _ = tokio::fs::remove_file(&tmp_image).await;
+    }
+
+    #[tokio::test]
+    async fn test_too_many_images_returns_error() {
+        let mut input = make_input("/tmp/img.png", "Edit this");
+        input.additional_image_paths = Some(vec!["/tmp/img.png".to_string(); 16]);
+        let result = run(&test_state(), input).await;
+        assert!(result.unwrap_err().contains("cannot exceed 16"));
+    }
+
+    #[tokio::test]
+    async fn test_n_eleven_returns_error() {
+        let mut input = make_input("/tmp/img.png", "Edit this");
+        input.n = Some(11);
+        let result = run(&test_state(), input).await;
+        assert!(result.unwrap_err().contains("n must be between 1 and 10"));
     }
 }

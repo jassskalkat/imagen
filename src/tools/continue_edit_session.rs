@@ -5,6 +5,7 @@ use crate::error::ImagenError;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
+use crate::tools::parse::parse_compression;
 use crate::types::EditRequest;
 
 /// Input parameters for the continue_edit_session tool.
@@ -16,6 +17,8 @@ pub struct ContinueEditSessionInput {
     pub prompt: String,
     /// Optional path to a mask image for this edit step.
     pub mask_path: Option<String>,
+    /// Output compression percentage (0-100).
+    pub output_compression: Option<u8>,
 }
 
 /// Output from the continue_edit_session tool.
@@ -35,6 +38,11 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
     if input.prompt.trim().is_empty() {
         return Err("Prompt cannot be empty.".to_string());
     }
+
+    let output_compression = match input.output_compression {
+        Some(c) => Some(parse_compression(c).map_err(|e| e.to_string())?),
+        None => None,
+    };
 
     // Look up session
     let session = state
@@ -83,6 +91,10 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         quality: None,
         format: None,
         n: Some(1),
+        output_compression,
+        background: None,
+        moderation: None,
+        user: None,
     };
 
     // Submit to provider
@@ -161,7 +173,6 @@ mod tests {
                 usage: None,
             })
         }
-
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
             Ok(ProviderResponse {
                 images: vec![],
@@ -169,11 +180,9 @@ mod tests {
                 usage: None,
             })
         }
-
         fn get_models(&self) -> Vec<ModelInfo> {
             vec![]
         }
-
         fn provider_name(&self) -> &'static str {
             "mock"
         }
@@ -205,6 +214,7 @@ mod tests {
             session_id: "  ".to_string(),
             prompt: "Next edit".to_string(),
             mask_path: None,
+            output_compression: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -218,6 +228,7 @@ mod tests {
             session_id: "some-session".to_string(),
             prompt: "   ".to_string(),
             mask_path: None,
+            output_compression: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -231,6 +242,7 @@ mod tests {
             session_id: "nonexistent-session-id".to_string(),
             prompt: "Apply edits".to_string(),
             mask_path: None,
+            output_compression: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
