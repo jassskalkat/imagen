@@ -1,0 +1,83 @@
+use thiserror::Error;
+
+/// Central error type for the imagen MCP server.
+#[derive(Debug, Error)]
+pub enum ImagenError {
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Provider authentication failed: {0}")]
+    ProviderAuth(String),
+
+    #[error("Rate limit exceeded: {0}")]
+    RateLimit(String),
+
+    #[error("Provider error: {0}")]
+    ProviderError(String),
+
+    #[error("Job not found: {0}")]
+    JobNotFound(String),
+
+    #[error("Session expired: {0}")]
+    SessionExpired(String),
+
+    #[error("File error: {0}")]
+    FileError(String),
+
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl From<std::io::Error> for ImagenError {
+    fn from(err: std::io::Error) -> Self {
+        ImagenError::FileError(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ImagenError {
+    fn from(err: serde_json::Error) -> Self {
+        ImagenError::Internal(format!("Serialization error: {err}"))
+    }
+}
+
+impl From<reqwest::Error> for ImagenError {
+    fn from(err: reqwest::Error) -> Self {
+        if err.is_timeout() {
+            ImagenError::ProviderError(format!("Request timed out: {err}"))
+        } else if err.is_status() {
+            let status = err.status();
+            match status.map(|s| s.as_u16()) {
+                Some(401) | Some(403) => {
+                    ImagenError::ProviderAuth(format!("Authentication failed: {err}"))
+                }
+                Some(429) => ImagenError::RateLimit(format!("Rate limited: {err}")),
+                _ => ImagenError::ProviderError(err.to_string()),
+            }
+        } else {
+            ImagenError::ProviderError(err.to_string())
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, ImagenError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_error_display() {
+        let err = ImagenError::InvalidInput("bad prompt".into());
+        assert_eq!(err.to_string(), "Invalid input: bad prompt");
+    }
+
+    #[test]
+    fn test_io_error_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
+        let err: ImagenError = io_err.into();
+        assert!(matches!(err, ImagenError::FileError(_)));
+    }
+}
