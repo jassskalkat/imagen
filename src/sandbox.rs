@@ -75,7 +75,7 @@ pub fn validate_output_path(path: &Path, output_dir: &str) -> Result<()> {
 /// - No null bytes in the path string
 /// - Path does not contain `..` traversal components
 /// - Path exists and is a regular file
-pub fn validate_input_path(path: &str) -> Result<()> {
+pub async fn validate_input_path(path: &str) -> Result<()> {
     // Reject null bytes
     if path.contains('\0') {
         return Err(ImagenError::InvalidInput(
@@ -93,8 +93,8 @@ pub fn validate_input_path(path: &str) -> Result<()> {
         }
     }
 
-    // Verify path exists and is a regular file
-    let metadata = std::fs::metadata(p).map_err(|_| {
+    // Verify path exists and is a regular file (async to avoid blocking the runtime)
+    let metadata = tokio::fs::metadata(p).await.map_err(|_| {
         ImagenError::InvalidInput(format!("Path does not exist: '{path}'"))
     })?;
 
@@ -112,49 +112,49 @@ mod tests {
     use super::*;
     use std::fs;
 
-    #[test]
-    fn test_validate_input_path_valid_file() {
+    #[tokio::test]
+    async fn test_validate_input_path_valid_file() {
         let dir = std::env::temp_dir().join("sandbox-test-input");
         fs::create_dir_all(&dir).unwrap();
         let file_path = dir.join("valid.png");
         fs::write(&file_path, b"test").unwrap();
 
-        let result = validate_input_path(file_path.to_str().unwrap());
+        let result = validate_input_path(file_path.to_str().unwrap()).await;
         assert!(result.is_ok());
 
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn test_validate_input_path_null_bytes() {
-        let result = validate_input_path("/tmp/file\0.png");
+    #[tokio::test]
+    async fn test_validate_input_path_null_bytes() {
+        let result = validate_input_path("/tmp/file\0.png").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("null bytes"), "Error was: {err}");
     }
 
-    #[test]
-    fn test_validate_input_path_traversal() {
-        let result = validate_input_path("/tmp/images/../../../etc/passwd");
+    #[tokio::test]
+    async fn test_validate_input_path_traversal() {
+        let result = validate_input_path("/tmp/images/../../../etc/passwd").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("traversal"), "Error was: {err}");
     }
 
-    #[test]
-    fn test_validate_input_path_nonexistent() {
-        let result = validate_input_path("/nonexistent/path/file.png");
+    #[tokio::test]
+    async fn test_validate_input_path_nonexistent() {
+        let result = validate_input_path("/nonexistent/path/file.png").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("does not exist"), "Error was: {err}");
     }
 
-    #[test]
-    fn test_validate_input_path_directory_rejected() {
+    #[tokio::test]
+    async fn test_validate_input_path_directory_rejected() {
         let dir = std::env::temp_dir().join("sandbox-test-dir");
         fs::create_dir_all(&dir).unwrap();
 
-        let result = validate_input_path(dir.to_str().unwrap());
+        let result = validate_input_path(dir.to_str().unwrap()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not a regular file"), "Error was: {err}");

@@ -47,7 +47,7 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         })?;
 
     // Validate session's last image still exists and is safe
-    validate_input_path(&session.last_image_path).map_err(|e| {
+    validate_input_path(&session.last_image_path).await.map_err(|e| {
         format!(
             "Session image no longer valid: {}",
             e
@@ -56,7 +56,7 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
 
     // Validate mask file if provided
     if let Some(ref mask) = input.mask_path {
-        validate_input_path(mask).map_err(|e| e.to_string())?;
+        validate_input_path(mask).await.map_err(|e| e.to_string())?;
         if !tokio::fs::metadata(mask)
             .await
             .map(|m| m.is_file())

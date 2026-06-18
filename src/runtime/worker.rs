@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
+use tokio::task::JoinHandle;
 use tokio::time::{self, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
@@ -19,6 +20,8 @@ pub struct Worker {
     semaphore: Arc<Semaphore>,
     poll_interval: Duration,
     cancel_token: CancellationToken,
+    /// Tracks spawned job task handles so we can await them on shutdown.
+    job_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl Worker {
@@ -30,6 +33,7 @@ impl Worker {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             poll_interval: Duration::from_millis(500),
             cancel_token,
+            job_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -85,9 +89,10 @@ impl Worker {
 
                 let state = self.state.clone();
                 let job_id = job.id.clone();
+                let job_handles = self.job_handles.clone();
 
-                // Spawn a task to process this job
-                tokio::spawn(async move {
+                // Spawn a task to process this job and track its handle
+                let handle = tokio::spawn(async move {
                     let _permit = permit; // Hold permit until done
 
                     debug!(job_id = %job_id, "Processing generate job");
@@ -127,6 +132,8 @@ impl Worker {
                         }
                     }
                 });
+
+                job_handles.lock().await.push(handle);
             }
 
             // Periodically evict old terminal jobs to prevent unbounded growth.
@@ -140,11 +147,30 @@ impl Worker {
                 debug!(count = evicted.len(), "Evicted old terminal jobs");
             }
 
+            // Clean up finished handles to prevent unbounded growth
+            {
+                let mut handles = self.job_handles.lock().await;
+                handles.retain(|h| !h.is_finished());
+            }
+
             // Wait for the poll interval or until cancellation is requested.
             tokio::select! {
                 _ = time::sleep(self.poll_interval) => {}
                 _ = self.cancel_token.cancelled() => {
-                    info!("Worker shutting down");
+                    info!("Worker shutting down, awaiting in-flight jobs...");
+                    // Await all in-flight job handles with a timeout
+                    let handles: Vec<_> = {
+                        let mut locked = self.job_handles.lock().await;
+                        locked.drain(..).collect()
+                    };
+                    let shutdown_timeout = Duration::from_secs(30);
+                    let _ = time::timeout(shutdown_timeout, async {
+                        for handle in handles {
+                            let _ = handle.await;
+                        }
+                    })
+                    .await;
+                    info!("Worker stopped");
                     break;
                 }
             }
@@ -225,7 +251,6 @@ mod tests {
         async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
             Ok(ProviderResponse {
                 images: vec![ImageData {
-                    // "test" in base64
                     b64_json: "dGVzdA==".to_string(),
                     revised_prompt: Some("A test image".to_string()),
                 }],
@@ -233,45 +258,30 @@ mod tests {
                 usage: None,
             })
         }
-
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
             Ok(ProviderResponse {
-                images: vec![ImageData {
-                    b64_json: "dGVzdA==".to_string(),
-                    revised_prompt: None,
-                }],
+                images: vec![ImageData { b64_json: "dGVzdA==".to_string(), revised_prompt: None }],
                 model: "mock".to_string(),
                 usage: None,
             })
         }
-
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
+        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
+        fn provider_name(&self) -> &'static str { "mock" }
     }
 
     fn test_state() -> AppState {
         let config = AppConfig {
             provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
+            azure_endpoint: None, azure_deployment_name: None,
+            azure_api_key: None, azure_api_version: None,
             openai_api_key: Some("sk-test".into()),
             openai_org_id: None,
             output_dir: std::env::temp_dir()
-                .join("imagen-worker-test")
-                .to_string_lossy()
-                .to_string(),
+                .join("imagen-worker-test").to_string_lossy().to_string(),
             max_concurrent_jobs: 2,
             default_model: "gpt-image-2".into(),
         };
-        let provider = Arc::new(MockProvider);
-        AppState::new(config, provider)
+        AppState::new(config, Arc::new(MockProvider))
     }
 
     #[test]
@@ -313,31 +323,20 @@ mod tests {
     #[tokio::test]
     async fn test_worker_skips_edit_jobs() {
         let state = test_state();
-
-        // Create a queued edit job - the worker should skip it
         let edit_job_id = state
             .job_registry
-            .create_job(
-                crate::jobs::JobKind::Edit,
-                "mock",
-                "gpt-image-2",
-                "Edit prompt",
-            )
+            .create_job(crate::jobs::JobKind::Edit, "mock", "gpt-image-2", "Edit prompt")
             .await;
 
-        // Create worker and spawn it
         let token = CancellationToken::new();
         let worker = Worker::new(state.clone(), token.clone());
         let handle = worker.spawn();
-
-        // Wait a bit for the worker to have polled
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // The edit job should still be in Queued state (skipped by worker)
         let job = state.job_registry.get_job(&edit_job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Queued);
 
-        // Cancel the worker gracefully
         token.cancel();
         let _ = handle.await;
     }
@@ -345,40 +344,25 @@ mod tests {
     #[tokio::test]
     async fn test_worker_processes_queued_job() {
         let state = test_state();
-
-        // Create a queued job
         let job_id = state
             .job_registry
-            .create_job(
-                crate::jobs::JobKind::Generate,
-                "mock",
-                "gpt-image-2",
-                "Worker test",
-            )
+            .create_job(crate::jobs::JobKind::Generate, "mock", "gpt-image-2", "Worker test")
             .await;
 
-        // Create worker and spawn it
         let token = CancellationToken::new();
         let worker = Worker::new(state.clone(), token.clone());
         let handle = worker.spawn();
-
-        // Wait a bit for the worker to pick up the job
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // Check that the job was completed
         let job = state.job_registry.get_job(&job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Completed);
         assert_eq!(job.results.len(), 1);
 
-        // Cancel the worker gracefully
         token.cancel();
         let _ = handle.await;
-
-        // Cleanup
         let _ = tokio::fs::remove_dir_all(
             std::path::Path::new(&state.config.output_dir).join(&job_id),
-        )
-        .await;
+        ).await;
     }
 
     #[tokio::test]

@@ -12,8 +12,12 @@ pub enum ImagenError {
     #[error("Rate limit exceeded: {0}")]
     RateLimit(String),
 
-    #[error("Provider error: {0}")]
-    ProviderError(String),
+    #[error("Provider error: {message}")]
+    ProviderError {
+        message: String,
+        /// HTTP status code from the provider, if available.
+        status_code: Option<u16>,
+    },
 
     #[error("Job not found: {0}")]
     JobNotFound(String),
@@ -46,7 +50,10 @@ impl From<serde_json::Error> for ImagenError {
 impl From<reqwest::Error> for ImagenError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            ImagenError::ProviderError(format!("Request timed out: {err}"))
+            ImagenError::ProviderError {
+                message: format!("Request timed out: {err}"),
+                status_code: None,
+            }
         } else if err.is_status() {
             let status = err.status();
             match status.map(|s| s.as_u16()) {
@@ -54,15 +61,43 @@ impl From<reqwest::Error> for ImagenError {
                     ImagenError::ProviderAuth(format!("Authentication failed: {err}"))
                 }
                 Some(429) => ImagenError::RateLimit(format!("Rate limited: {err}")),
-                _ => ImagenError::ProviderError(err.to_string()),
+                Some(code) => ImagenError::ProviderError {
+                    message: err.to_string(),
+                    status_code: Some(code),
+                },
+                None => ImagenError::ProviderError {
+                    message: err.to_string(),
+                    status_code: None,
+                },
             }
         } else {
-            ImagenError::ProviderError(err.to_string())
+            ImagenError::ProviderError {
+                message: err.to_string(),
+                status_code: None,
+            }
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, ImagenError>;
+
+impl ImagenError {
+    /// Returns true if this error is transient and the operation should be retried.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            ImagenError::RateLimit(_) => true,
+            ImagenError::ProviderError { status_code, message } => {
+                // Retry on 5xx status codes
+                if let Some(code) = status_code {
+                    return *code >= 500 && *code < 600;
+                }
+                // Fallback: retry on timeout errors (no status code available)
+                message.contains("timed out") || message.contains("timeout")
+            }
+            _ => false,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -107,7 +142,10 @@ mod tests {
                 "Rate limit exceeded: slow down",
             ),
             (
-                ImagenError::ProviderError("500".into()),
+                ImagenError::ProviderError {
+                    message: "500".into(),
+                    status_code: Some(500),
+                },
                 "Provider error: 500",
             ),
             (
@@ -151,5 +189,68 @@ mod tests {
         let err: ImagenError = io_err.into();
         assert!(matches!(err, ImagenError::FileError(_)));
         assert!(err.to_string().contains("access denied"));
+    }
+
+    #[test]
+    fn test_is_transient_rate_limit() {
+        let err = ImagenError::RateLimit("slow down".into());
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_5xx_status() {
+        let err = ImagenError::ProviderError {
+            message: "server error".into(),
+            status_code: Some(500),
+        };
+        assert!(err.is_transient());
+
+        let err = ImagenError::ProviderError {
+            message: "bad gateway".into(),
+            status_code: Some(502),
+        };
+        assert!(err.is_transient());
+
+        let err = ImagenError::ProviderError {
+            message: "service unavailable".into(),
+            status_code: Some(503),
+        };
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_transient_timeout_no_status() {
+        let err = ImagenError::ProviderError {
+            message: "Request timed out: connection error".into(),
+            status_code: None,
+        };
+        assert!(err.is_transient());
+    }
+
+    #[test]
+    fn test_is_not_transient_4xx() {
+        let err = ImagenError::ProviderError {
+            message: "bad request".into(),
+            status_code: Some(400),
+        };
+        assert!(!err.is_transient());
+
+        let err = ImagenError::ProviderError {
+            message: "not found".into(),
+            status_code: Some(404),
+        };
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn test_is_not_transient_auth() {
+        let err = ImagenError::ProviderAuth("unauthorized".into());
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn test_is_not_transient_invalid_input() {
+        let err = ImagenError::InvalidInput("bad".into());
+        assert!(!err.is_transient());
     }
 }

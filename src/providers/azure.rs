@@ -87,7 +87,10 @@ impl AzureProvider {
     ) -> Result<ProviderResponse> {
         let data = body["data"]
             .as_array()
-            .ok_or_else(|| ImagenError::ProviderError("Missing 'data' in response".into()))?;
+            .ok_or_else(|| ImagenError::ProviderError {
+                message: "Missing 'data' in response".into(),
+                status_code: None,
+            })?;
 
         let images: Vec<ImageData> = data
             .iter()
@@ -173,10 +176,13 @@ impl ImageProvider for AzureProvider {
                     return Err(match status.as_u16() {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
-                        _ => ImagenError::ProviderError(format!(
-                            "Azure API error ({}): {}",
-                            status, error_msg
-                        )),
+                        code => ImagenError::ProviderError {
+                            message: format!(
+                                "Azure API error ({}): {}",
+                                status, error_msg
+                            ),
+                            status_code: Some(code),
+                        },
                     });
                 }
 
@@ -275,10 +281,13 @@ impl ImageProvider for AzureProvider {
                     return Err(match status.as_u16() {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
-                        _ => ImagenError::ProviderError(format!(
-                            "Azure API error ({}): {}",
-                            status, error_msg
-                        )),
+                        code => ImagenError::ProviderError {
+                            message: format!(
+                                "Azure API error ({}): {}",
+                                status, error_msg
+                            ),
+                            status_code: Some(code),
+                        },
                     });
                 }
 

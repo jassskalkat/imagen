@@ -15,21 +15,7 @@ const BACKOFF_FACTOR: u32 = 2;
 
 /// Determine whether an error is transient and should be retried.
 fn is_retryable(err: &ImagenError) -> bool {
-    match err {
-        ImagenError::RateLimit(_) => true,
-        ImagenError::ProviderError(msg) => {
-            // Retry on 5xx-style errors or timeouts
-            msg.contains("500")
-                || msg.contains("502")
-                || msg.contains("503")
-                || msg.contains("504")
-                || msg.contains("timed out")
-                || msg.contains("timeout")
-                || msg.contains("server error")
-                || msg.contains("internal error")
-        }
-        _ => false,
-    }
+    err.is_transient()
 }
 
 /// Execute an async operation with exponential backoff retry.
@@ -165,9 +151,10 @@ mod tests {
             async move {
                 let n = count.fetch_add(1, Ordering::SeqCst);
                 if n < 1 {
-                    Err(ImagenError::ProviderError(
-                        "Azure API error (503): server error".into(),
-                    ))
+                    Err(ImagenError::ProviderError {
+                        message: "Azure API error: server error".into(),
+                        status_code: Some(503),
+                    })
                 } else {
                     Ok::<_, ImagenError>("recovered")
                 }

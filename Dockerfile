@@ -53,8 +53,14 @@ ENV IMAGEN_OUTPUT_DIR="/data/output"
 ENV IMAGEN_MAX_CONCURRENT_JOBS="4"
 ENV IMAGEN_DEFAULT_MODEL="gpt-image-2"
 
-# Create the default output directory.
-RUN mkdir -p /data/output
+# Create a non-root user for security best practices.
+RUN useradd -r -u 1000 -m imagen
+
+# Create the default output directory with correct ownership.
+RUN mkdir -p /data/output && chown imagen:imagen /data/output
+
+# Run as non-root user.
+USER imagen
 
 # The imagen binary communicates over stdio (MCP transport).
 ENTRYPOINT ["imagen"]

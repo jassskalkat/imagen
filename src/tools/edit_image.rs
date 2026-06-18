@@ -41,9 +41,9 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     }
 
     // Validate input paths for path traversal and null bytes
-    validate_input_path(&input.image_path).map_err(|e| e.to_string())?;
+    validate_input_path(&input.image_path).await.map_err(|e| e.to_string())?;
     if let Some(ref mask) = input.mask_path {
-        validate_input_path(mask).map_err(|e| e.to_string())?;
+        validate_input_path(mask).await.map_err(|e| e.to_string())?;
     }
 
     // Validate image file exists

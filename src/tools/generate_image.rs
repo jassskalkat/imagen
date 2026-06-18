@@ -133,7 +133,9 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
 
     // Submit to provider (synchronous for now, worker can pick up later)
     let result = state.provider.generate(&request).await;
-    match result {
+    let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
+
+    let status = match result {
         Ok(response) => {
             // Save artifacts and complete job
             let mut results = Vec::new();
@@ -163,16 +165,18 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
                 });
             }
             let _ = state.job_registry.complete_job(&job_id, results).await;
+            "submitted".to_string()
         }
         Err(e) => {
-            let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
+            let error_msg = e.to_string();
+            let _ = state.job_registry.fail_job(&job_id, error_msg.clone()).await;
+            format!("failed: {error_msg}")
         }
-    }
+    };
 
-    let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
     let output = GenerateImageOutput {
         job_id,
-        status: "submitted".to_string(),
+        status,
         cost_estimate: estimate,
     };
 
@@ -203,22 +207,11 @@ mod tests {
                 usage: None,
             })
         }
-
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
+            Ok(ProviderResponse { images: vec![], model: "mock".to_string(), usage: None })
         }
-
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
+        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
+        fn provider_name(&self) -> &'static str { "mock" }
     }
 
     fn test_state() -> AppState {
@@ -291,11 +284,7 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "   ".to_string(),
-            size: None,
-            quality: None,
-            style: None,
-            output_format: None,
-            n: None,
+            size: None, quality: None, style: None, output_format: None, n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -308,10 +297,7 @@ mod tests {
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
             size: Some("999x999".to_string()),
-            quality: None,
-            style: None,
-            output_format: None,
-            n: None,
+            quality: None, style: None, output_format: None, n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -323,11 +309,8 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None,
-            quality: Some("ultra".to_string()),
-            style: None,
-            output_format: None,
-            n: None,
+            size: None, quality: Some("ultra".to_string()),
+            style: None, output_format: None, n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -339,11 +322,7 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None,
-            quality: None,
-            style: None,
-            output_format: None,
-            n: Some(0),
+            size: None, quality: None, style: None, output_format: None, n: Some(0),
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -355,14 +334,61 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None,
-            quality: None,
-            style: None,
-            output_format: None,
-            n: Some(5),
+            size: None, quality: None, style: None, output_format: None, n: Some(5),
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("n must be between 1 and 4"));
+    }
+
+    struct FailingMockProvider;
+
+    #[async_trait]
+    impl ImageProvider for FailingMockProvider {
+        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
+            Err(crate::error::ImagenError::ProviderError {
+                message: "service unavailable".into(),
+                status_code: Some(503),
+            })
+        }
+        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
+            Err(crate::error::ImagenError::ProviderError {
+                message: "service unavailable".into(),
+                status_code: Some(503),
+            })
+        }
+        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
+        fn provider_name(&self) -> &'static str { "mock" }
+    }
+
+    #[tokio::test]
+    async fn test_provider_failure_returns_failed_status() {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-test".into()),
+            openai_org_id: None,
+            output_dir: std::env::temp_dir()
+                .join("imagen-gen-fail-test")
+                .to_string_lossy()
+                .to_string(),
+            max_concurrent_jobs: 2,
+            default_model: "gpt-image-2".into(),
+        };
+        let state = AppState::new(config, Arc::new(FailingMockProvider));
+        let input = GenerateImageInput {
+            prompt: "A cat".to_string(),
+            size: None, quality: None, style: None, output_format: None, n: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_ok(), "Should return Ok with failed status");
+        let output = result.unwrap();
+        assert!(
+            output.contains("\"status\":\"failed:"),
+            "Status should indicate failure, got: {output}"
+        );
     }
 }
