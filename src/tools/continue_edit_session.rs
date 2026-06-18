@@ -5,7 +5,7 @@ use crate::error::ImagenError;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
-use crate::tools::parse::parse_compression;
+use crate::tools::parse::{parse_background, parse_compression, parse_moderation};
 use crate::types::EditRequest;
 
 /// Input parameters for the continue_edit_session tool.
@@ -19,6 +19,12 @@ pub struct ContinueEditSessionInput {
     pub mask_path: Option<String>,
     /// Output compression percentage (0-100).
     pub output_compression: Option<u8>,
+    /// Image background: "opaque" or "auto".
+    pub background: Option<String>,
+    /// Content moderation level: "low" or "auto".
+    pub moderation: Option<String>,
+    /// User tracking identifier passed to the API.
+    pub user: Option<String>,
 }
 
 /// Output from the continue_edit_session tool.
@@ -41,6 +47,14 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
 
     let output_compression = match input.output_compression {
         Some(c) => Some(parse_compression(c).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let background = match &input.background {
+        Some(b) => Some(parse_background(b).map_err(|e| e.to_string())?),
+        None => None,
+    };
+    let moderation = match &input.moderation {
+        Some(m) => Some(parse_moderation(m).map_err(|e| e.to_string())?),
         None => None,
     };
 
@@ -92,9 +106,9 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         format: None,
         n: Some(1),
         output_compression,
-        background: None,
-        moderation: None,
-        user: None,
+        background,
+        moderation,
+        user: input.user,
     };
 
     // Submit to provider
@@ -215,6 +229,9 @@ mod tests {
             prompt: "Next edit".to_string(),
             mask_path: None,
             output_compression: None,
+            background: None,
+            moderation: None,
+            user: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -229,6 +246,9 @@ mod tests {
             prompt: "   ".to_string(),
             mask_path: None,
             output_compression: None,
+            background: None,
+            moderation: None,
+            user: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -243,6 +263,9 @@ mod tests {
             prompt: "Apply edits".to_string(),
             mask_path: None,
             output_compression: None,
+            background: None,
+            moderation: None,
+            user: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());

@@ -6,7 +6,8 @@ use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_output_path;
 use crate::tools::parse::{
-    parse_background, parse_compression, parse_format, parse_quality, parse_size, parse_style,
+    parse_background, parse_compression, parse_format, parse_moderation, parse_quality, parse_size,
+    parse_style,
 };
 use crate::types::{GenerateRequest, ImageQuality, ImageSize, ImageStyle, OutputFormat};
 
@@ -73,6 +74,10 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         Some(c) => Some(parse_compression(c).map_err(|e| e.to_string())?),
         None => None,
     };
+    let moderation = match &input.moderation {
+        Some(m) => Some(parse_moderation(m).map_err(|e| e.to_string())?),
+        None => None,
+    };
     let n = input.n.unwrap_or(1);
     if n == 0 || n > 10 {
         return Err("n must be between 1 and 10.".to_string());
@@ -110,7 +115,7 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         n: Some(n),
         output_compression,
         background,
-        moderation: input.moderation,
+        moderation,
         user: input.user,
     };
 

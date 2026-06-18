@@ -5,7 +5,9 @@ use uuid::Uuid;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
-use crate::tools::parse::{parse_background, parse_compression, parse_quality, parse_size};
+use crate::tools::parse::{
+    parse_background, parse_compression, parse_moderation, parse_quality, parse_size,
+};
 use crate::types::EditRequest;
 
 /// Input parameters for the edit_image tool.
@@ -115,6 +117,10 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         Some(b) => Some(parse_background(b).map_err(|e| e.to_string())?),
         None => None,
     };
+    let moderation = match &input.moderation {
+        Some(m) => Some(parse_moderation(m).map_err(|e| e.to_string())?),
+        None => None,
+    };
 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
@@ -145,7 +151,7 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         n: Some(n),
         output_compression,
         background,
-        moderation: input.moderation,
+        moderation,
         user: input.user,
     };
 

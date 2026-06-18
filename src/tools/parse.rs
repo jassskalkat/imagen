@@ -106,6 +106,16 @@ pub fn parse_background(s: &str) -> Result<ImageBackground, ImagenError> {
     }
 }
 
+/// Parse a moderation string. Must be "low" or "auto".
+pub fn parse_moderation(s: &str) -> Result<String, ImagenError> {
+    match s {
+        "low" | "auto" => Ok(s.to_string()),
+        other => Err(ImagenError::InvalidInput(format!(
+            "Invalid moderation: '{other}'. Use low or auto."
+        ))),
+    }
+}
+
 /// Validate an output_compression value (0-100).
 pub fn parse_compression(value: u8) -> Result<u8, ImagenError> {
     if value > 100 {
@@ -249,6 +259,22 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Invalid background"));
+    }
+
+    #[test]
+    fn test_parse_moderation_valid() {
+        assert_eq!(parse_moderation("low").unwrap(), "low");
+        assert_eq!(parse_moderation("auto").unwrap(), "auto");
+    }
+
+    #[test]
+    fn test_parse_moderation_invalid() {
+        let result = parse_moderation("high");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid moderation"));
     }
 
     #[test]
