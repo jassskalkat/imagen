@@ -5,11 +5,9 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 
 use crate::runtime::state::AppState;
-use crate::tools::check_job::CheckJobInput;
-use crate::tools::continue_edit_session::ContinueEditSessionInput;
-use crate::tools::edit_image::EditImageInput;
-use crate::tools::estimate_cost::EstimateCostInput;
-use crate::tools::generate_image::GenerateImageInput;
+use crate::tools::{
+    CheckJobInput, ContinueEditSessionInput, EditImageInput, EstimateCostInput, GenerateImageInput,
+};
 
 /// The MCP server struct that holds application state and routes tool calls.
 #[derive(Debug, Clone)]
