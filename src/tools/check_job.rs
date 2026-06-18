@@ -101,3 +101,85 @@ pub async fn run(state: &AppState, input: CheckJobInput) -> Result<String, Strin
 
     serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AppConfig, Provider};
+    use crate::error::Result;
+    use crate::providers::{ImageProvider, ModelInfo};
+    use crate::types::{EditRequest, GenerateRequest, ProviderResponse};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl ImageProvider for MockProvider {
+        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_state() -> AppState {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-test".into()),
+            openai_org_id: None,
+            output_dir: "/tmp/imagen-check-test".into(),
+            max_concurrent_jobs: 2,
+            default_model: "gpt-image-2".into(),
+        };
+        AppState::new(config, Arc::new(MockProvider))
+    }
+
+    #[tokio::test]
+    async fn test_empty_job_id_returns_error() {
+        let state = test_state();
+        let input = CheckJobInput {
+            job_id: "   ".to_string(),
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("job_id cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_nonexistent_job_id_returns_error() {
+        let state = test_state();
+        let input = CheckJobInput {
+            job_id: "nonexistent-job-id-xyz".to_string(),
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not found") || err.contains("Job not found"),
+            "Expected 'not found' error, got: {err}"
+        );
+    }
+}

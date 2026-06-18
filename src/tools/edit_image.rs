@@ -160,3 +160,140 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 
     serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AppConfig, Provider};
+    use crate::error::Result;
+    use crate::providers::{ImageProvider, ModelInfo};
+    use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl ImageProvider for MockProvider {
+        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![ImageData {
+                    b64_json: "dGVzdA==".to_string(),
+                    revised_prompt: None,
+                }],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_state() -> AppState {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-test".into()),
+            openai_org_id: None,
+            output_dir: std::env::temp_dir()
+                .join("imagen-edit-test")
+                .to_string_lossy()
+                .to_string(),
+            max_concurrent_jobs: 2,
+            default_model: "gpt-image-2".into(),
+        };
+        AppState::new(config, Arc::new(MockProvider))
+    }
+
+    #[tokio::test]
+    async fn test_empty_prompt_returns_error() {
+        let state = test_state();
+        let input = EditImageInput {
+            image_path: "/tmp/image.png".to_string(),
+            prompt: "   ".to_string(),
+            mask_path: None,
+            size: None,
+            quality: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Prompt cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_image_path_returns_error() {
+        let state = test_state();
+        let input = EditImageInput {
+            image_path: "".to_string(),
+            prompt: "Edit this".to_string(),
+            mask_path: None,
+            size: None,
+            quality: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("image_path cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_nonexistent_image_path_returns_error() {
+        let state = test_state();
+        let input = EditImageInput {
+            image_path: "/tmp/nonexistent-imagen-test-image-xyz.png".to_string(),
+            prompt: "Edit this".to_string(),
+            mask_path: None,
+            size: None,
+            quality: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not found") || err.contains("does not exist"),
+            "Expected 'not found' error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nonexistent_mask_path_returns_error() {
+        // Create a temporary image file so image_path validation passes
+        let tmp_image = std::env::temp_dir().join("imagen-edit-test-img.png");
+        tokio::fs::write(&tmp_image, b"fake image data").await.unwrap();
+
+        let state = test_state();
+        let input = EditImageInput {
+            image_path: tmp_image.to_string_lossy().to_string(),
+            prompt: "Edit this".to_string(),
+            mask_path: Some("/tmp/nonexistent-imagen-test-mask-xyz.png".to_string()),
+            size: None,
+            quality: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not found") || err.contains("does not exist"),
+            "Expected 'not found' error, got: {err}"
+        );
+
+        // Cleanup
+        let _ = tokio::fs::remove_file(&tmp_image).await;
+    }
+}

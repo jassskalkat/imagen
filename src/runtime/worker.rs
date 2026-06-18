@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 use tokio::time::{self, Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::artifacts;
@@ -17,16 +18,18 @@ pub struct Worker {
     state: AppState,
     semaphore: Arc<Semaphore>,
     poll_interval: Duration,
+    cancel_token: CancellationToken,
 }
 
 impl Worker {
-    /// Create a new Worker with the given state and concurrency limit.
-    pub fn new(state: AppState) -> Self {
+    /// Create a new Worker with the given state and cancellation token.
+    pub fn new(state: AppState, cancel_token: CancellationToken) -> Self {
         let max_concurrent = state.config.max_concurrent_jobs;
         Self {
             state,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             poll_interval: Duration::from_millis(500),
+            cancel_token,
         }
     }
 
@@ -137,7 +140,14 @@ impl Worker {
                 debug!(count = evicted.len(), "Evicted old terminal jobs");
             }
 
-            time::sleep(self.poll_interval).await;
+            // Wait for the poll interval or until cancellation is requested.
+            tokio::select! {
+                _ = time::sleep(self.poll_interval) => {}
+                _ = self.cancel_token.cancelled() => {
+                    info!("Worker shutting down");
+                    break;
+                }
+            }
         }
     }
 }
@@ -267,7 +277,8 @@ mod tests {
     #[test]
     fn test_worker_creation() {
         let state = test_state();
-        let worker = Worker::new(state.clone());
+        let token = CancellationToken::new();
+        let worker = Worker::new(state.clone(), token);
         assert_eq!(worker.poll_interval, Duration::from_millis(500));
     }
 
@@ -315,7 +326,8 @@ mod tests {
             .await;
 
         // Create worker and spawn it
-        let worker = Worker::new(state.clone());
+        let token = CancellationToken::new();
+        let worker = Worker::new(state.clone(), token.clone());
         let handle = worker.spawn();
 
         // Wait a bit for the worker to have polled
@@ -325,8 +337,9 @@ mod tests {
         let job = state.job_registry.get_job(&edit_job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Queued);
 
-        // Abort the worker
-        handle.abort();
+        // Cancel the worker gracefully
+        token.cancel();
+        let _ = handle.await;
     }
 
     #[tokio::test]
@@ -345,7 +358,8 @@ mod tests {
             .await;
 
         // Create worker and spawn it
-        let worker = Worker::new(state.clone());
+        let token = CancellationToken::new();
+        let worker = Worker::new(state.clone(), token.clone());
         let handle = worker.spawn();
 
         // Wait a bit for the worker to pick up the job
@@ -356,13 +370,29 @@ mod tests {
         assert_eq!(job.status, JobStatus::Completed);
         assert_eq!(job.results.len(), 1);
 
-        // Abort the worker
-        handle.abort();
+        // Cancel the worker gracefully
+        token.cancel();
+        let _ = handle.await;
 
         // Cleanup
         let _ = tokio::fs::remove_dir_all(
             std::path::Path::new(&state.config.output_dir).join(&job_id),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_worker_stops_on_cancellation() {
+        let state = test_state();
+        let token = CancellationToken::new();
+        let worker = Worker::new(state.clone(), token.clone());
+        let handle = worker.spawn();
+
+        // Cancel immediately
+        token.cancel();
+
+        // Worker should exit within a short time
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "Worker should have stopped after cancellation");
     }
 }

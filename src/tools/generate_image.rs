@@ -182,6 +182,63 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{AppConfig, Provider};
+    use crate::error::Result;
+    use crate::providers::{ImageProvider, ModelInfo};
+    use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl ImageProvider for MockProvider {
+        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![ImageData {
+                    b64_json: "dGVzdA==".to_string(),
+                    revised_prompt: Some("revised".to_string()),
+                }],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_state() -> AppState {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-test".into()),
+            openai_org_id: None,
+            output_dir: std::env::temp_dir()
+                .join("imagen-gen-test")
+                .to_string_lossy()
+                .to_string(),
+            max_concurrent_jobs: 2,
+            default_model: "gpt-image-2".into(),
+        };
+        AppState::new(config, Arc::new(MockProvider))
+    }
 
     #[test]
     fn test_parse_size_valid() {
@@ -229,10 +286,9 @@ mod tests {
         assert!(err.contains("Invalid format"));
     }
 
-    #[test]
-    fn test_empty_prompt_rejected() {
-        // We can't easily call `run` without AppState, but we can verify
-        // the input validation logic that checks empty prompts
+    #[tokio::test]
+    async fn test_empty_prompt_returns_error() {
+        let state = test_state();
         let input = GenerateImageInput {
             prompt: "   ".to_string(),
             size: None,
@@ -241,18 +297,72 @@ mod tests {
             output_format: None,
             n: None,
         };
-        assert!(input.prompt.trim().is_empty());
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Prompt cannot be empty"));
     }
 
-    #[test]
-    fn test_n_bounds() {
-        // n=0 and n>4 should be rejected by the run function
-        let n_zero: u8 = 0;
-        let n_five: u8 = 5;
-        assert!(n_zero == 0 || n_zero > 4); // Would be rejected
-        assert!(n_five == 0 || n_five > 4); // Would be rejected
+    #[tokio::test]
+    async fn test_invalid_size_returns_error() {
+        let state = test_state();
+        let input = GenerateImageInput {
+            prompt: "A cat".to_string(),
+            size: Some("999x999".to_string()),
+            quality: None,
+            style: None,
+            output_format: None,
+            n: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid size"));
+    }
 
-        let n_valid: u8 = 2;
-        assert!(!(n_valid == 0 || n_valid > 4)); // Would be accepted
+    #[tokio::test]
+    async fn test_invalid_quality_returns_error() {
+        let state = test_state();
+        let input = GenerateImageInput {
+            prompt: "A cat".to_string(),
+            size: None,
+            quality: Some("ultra".to_string()),
+            style: None,
+            output_format: None,
+            n: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid quality"));
+    }
+
+    #[tokio::test]
+    async fn test_n_zero_returns_error() {
+        let state = test_state();
+        let input = GenerateImageInput {
+            prompt: "A cat".to_string(),
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: Some(0),
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("n must be between 1 and 4"));
+    }
+
+    #[tokio::test]
+    async fn test_n_five_returns_error() {
+        let state = test_state();
+        let input = GenerateImageInput {
+            prompt: "A cat".to_string(),
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: Some(5),
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("n must be between 1 and 4"));
     }
 }

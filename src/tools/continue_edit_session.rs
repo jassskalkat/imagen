@@ -146,3 +146,105 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
 
     serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AppConfig, Provider};
+    use crate::error::Result;
+    use crate::providers::{ImageProvider, ModelInfo};
+    use crate::types::{EditRequest, GenerateRequest, ProviderResponse};
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct MockProvider;
+
+    #[async_trait]
+    impl ImageProvider for MockProvider {
+        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
+        }
+
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
+    }
+
+    fn test_state() -> AppState {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-test".into()),
+            openai_org_id: None,
+            output_dir: std::env::temp_dir()
+                .join("imagen-continue-test")
+                .to_string_lossy()
+                .to_string(),
+            max_concurrent_jobs: 2,
+            default_model: "gpt-image-2".into(),
+        };
+        AppState::new(config, Arc::new(MockProvider))
+    }
+
+    #[tokio::test]
+    async fn test_empty_session_id_returns_error() {
+        let state = test_state();
+        let input = ContinueEditSessionInput {
+            session_id: "  ".to_string(),
+            prompt: "Next edit".to_string(),
+            mask_path: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("session_id cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_prompt_returns_error() {
+        let state = test_state();
+        let input = ContinueEditSessionInput {
+            session_id: "some-session".to_string(),
+            prompt: "   ".to_string(),
+            mask_path: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Prompt cannot be empty"));
+    }
+
+    #[tokio::test]
+    async fn test_nonexistent_session_returns_error() {
+        let state = test_state();
+        let input = ContinueEditSessionInput {
+            session_id: "nonexistent-session-id".to_string(),
+            prompt: "Apply edits".to_string(),
+            mask_path: None,
+        };
+        let result = run(&state, input).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("not found or expired"),
+            "Expected 'not found or expired' error, got: {err}"
+        );
+    }
+}

@@ -79,5 +79,77 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file missing");
         let err: ImagenError = io_err.into();
         assert!(matches!(err, ImagenError::FileError(_)));
+        assert!(err.to_string().contains("file missing"));
+    }
+
+    #[test]
+    fn test_serde_json_error_conversion() {
+        // Create a serde_json error by trying to parse invalid JSON
+        let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
+        let err: ImagenError = json_err.into();
+        assert!(matches!(err, ImagenError::Internal(_)));
+        assert!(err.to_string().contains("Serialization error"));
+    }
+
+    #[test]
+    fn test_all_error_variants_display() {
+        let cases = vec![
+            (
+                ImagenError::InvalidInput("test".into()),
+                "Invalid input: test",
+            ),
+            (
+                ImagenError::ProviderAuth("unauthorized".into()),
+                "Provider authentication failed: unauthorized",
+            ),
+            (
+                ImagenError::RateLimit("slow down".into()),
+                "Rate limit exceeded: slow down",
+            ),
+            (
+                ImagenError::ProviderError("500".into()),
+                "Provider error: 500",
+            ),
+            (
+                ImagenError::JobNotFound("abc".into()),
+                "Job not found: abc",
+            ),
+            (
+                ImagenError::SessionExpired("sess-1".into()),
+                "Session expired: sess-1",
+            ),
+            (
+                ImagenError::FileError("no file".into()),
+                "File error: no file",
+            ),
+            (
+                ImagenError::ConfigError("bad config".into()),
+                "Configuration error: bad config",
+            ),
+            (
+                ImagenError::Internal("oops".into()),
+                "Internal error: oops",
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_io_error_not_found_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "path not found");
+        let err: ImagenError = io_err.into();
+        assert!(matches!(err, ImagenError::FileError(_)));
+    }
+
+    #[test]
+    fn test_io_error_permission_denied_conversion() {
+        let io_err =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let err: ImagenError = io_err.into();
+        assert!(matches!(err, ImagenError::FileError(_)));
+        assert!(err.to_string().contains("access denied"));
     }
 }

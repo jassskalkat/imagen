@@ -14,6 +14,7 @@ mod types;
 use std::sync::Arc;
 
 use rmcp::ServiceExt;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -75,9 +76,12 @@ async fn main() {
     // Initialize application state
     let state = AppState::new(config, provider);
 
+    // Create a cancellation token for graceful shutdown
+    let cancel_token = CancellationToken::new();
+
     // Spawn background worker for job management
-    let worker = Worker::new(state.clone());
-    worker.spawn();
+    let worker = Worker::new(state.clone(), cancel_token.clone());
+    let worker_handle = worker.spawn();
 
     // Create and start the MCP server on stdio transport
     let server = ImagenServer::new(state);
@@ -85,15 +89,50 @@ async fn main() {
 
     info!("Starting MCP server on stdio transport...");
 
-    match server.serve(transport).await {
+    let server_result = server.serve(transport).await;
+    match server_result {
         Ok(running) => {
             info!("MCP server running, waiting for connections...");
-            let _ = running.waiting().await;
-            info!("MCP server shut down.");
+
+            // Race between the server finishing and a shutdown signal
+            tokio::select! {
+                result = running.waiting() => {
+                    info!("MCP server shut down: {:?}", result);
+                }
+                _ = shutdown_signal() => {
+                    info!("Shutdown signal received, stopping server...");
+                }
+            }
         }
         Err(e) => {
             tracing::error!("Failed to start MCP server: {e}");
             std::process::exit(1);
         }
+    }
+
+    // Signal the worker to stop and wait for it to finish
+    cancel_token.cancel();
+    let _ = worker_handle.await;
+    info!("imagen MCP server stopped.");
+}
+
+/// Wait for a shutdown signal (Ctrl+C or SIGTERM on Unix).
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
     }
 }
