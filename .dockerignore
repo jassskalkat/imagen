@@ -1,0 +1,5 @@
+target/
+.git/
+.agents/
+gpt-image-2-mcp-plan/
+*.md
