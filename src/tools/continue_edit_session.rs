@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::error::ImagenError;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
@@ -39,7 +40,7 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
     let session = state
         .get_edit_session(&input.session_id)
         .await
-        .ok_or_else(|| format!("Edit session '{}' not found or expired.", input.session_id))?;
+        .ok_or_else(|| ImagenError::SessionExpired(input.session_id.clone()).to_string())?;
 
     // Validate session's last image still exists and is safe
     validate_input_path(&session.last_image_path)
@@ -235,8 +236,8 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            err.contains("not found or expired"),
-            "Expected 'not found or expired' error, got: {err}"
+            err.contains("expired") || err.contains("Session expired"),
+            "Expected 'expired' error, got: {err}"
         );
     }
 }

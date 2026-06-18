@@ -53,6 +53,7 @@ pub async fn read_artifact(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// Check if an artifact exists at the given path.
+#[allow(dead_code)] // Part of the public API for future artifact management features
 pub async fn artifact_exists(path: &Path) -> bool {
     fs::metadata(path).await.is_ok()
 }

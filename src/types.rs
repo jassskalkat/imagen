@@ -56,6 +56,7 @@ impl OutputFormat {
     }
 
     /// Return the MIME type for this format.
+    #[allow(dead_code)] // Part of the public API for HTTP transport (future SSE/HTTP mode)
     pub fn mime_type(&self) -> &'static str {
         match self {
             OutputFormat::Png => "image/png",

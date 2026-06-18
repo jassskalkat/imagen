@@ -214,7 +214,6 @@ mod tests {
         let id = registry
             .create_job(JobKind::Generate, "openai", "gpt-image-2", "A sunset")
             .await;
-
         let job = registry.get_job(&id).await.unwrap();
         assert_eq!(job.status, JobStatus::Queued);
         assert_eq!(job.prompt, "A sunset");
@@ -227,7 +226,6 @@ mod tests {
         let id = registry
             .create_job(JobKind::Generate, "azure", "gpt-image-2", "A cat")
             .await;
-
         registry
             .update_status(&id, JobStatus::Running)
             .await
@@ -242,14 +240,12 @@ mod tests {
         let id = registry
             .create_job(JobKind::Generate, "openai", "gpt-image-2", "A dog")
             .await;
-
         let results = vec![ImageResult {
             file_path: "/tmp/test.png".into(),
             format: crate::types::OutputFormat::Png,
             size_bytes: 1024,
             revised_prompt: None,
         }];
-
         registry.complete_job(&id, results).await.unwrap();
         let job = registry.get_job(&id).await.unwrap();
         assert_eq!(job.status, JobStatus::Completed);
@@ -263,7 +259,6 @@ mod tests {
         let id = registry
             .create_job(JobKind::Edit, "openai", "gpt-image-2", "Fix colors")
             .await;
-
         registry
             .fail_job(&id, "Provider timeout".into())
             .await
@@ -276,8 +271,7 @@ mod tests {
     #[tokio::test]
     async fn test_job_not_found() {
         let registry = JobRegistry::new();
-        let result = registry.get_job("nonexistent").await;
-        assert!(result.is_err());
+        assert!(registry.get_job("nonexistent").await.is_err());
     }
 
     #[tokio::test]
@@ -293,7 +287,6 @@ mod tests {
             .update_status(&id2, JobStatus::Running)
             .await
             .unwrap();
-
         assert_eq!(registry.list_jobs(Some(&JobStatus::Queued)).await.len(), 1);
         assert_eq!(registry.list_jobs(Some(&JobStatus::Running)).await.len(), 1);
         assert_eq!(registry.list_jobs(None).await.len(), 2);
@@ -314,57 +307,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_completed_jobs_not_expired() {
+    async fn test_terminal_jobs_not_expired_by_stale_check() {
         let registry = JobRegistry::new();
-        let id = registry
+        let id1 = registry
             .create_job(JobKind::Generate, "openai", "gpt-image-2", "Done")
             .await;
-        registry.complete_job(&id, vec![]).await.unwrap();
-
-        let expired = registry.expire_stale_jobs(0).await;
-        assert!(!expired.contains(&id));
-        assert_eq!(
-            registry.get_job(&id).await.unwrap().status,
-            JobStatus::Completed
-        );
-    }
-
-    #[tokio::test]
-    async fn test_failed_jobs_not_expired() {
-        let registry = JobRegistry::new();
-        let id = registry
+        registry.complete_job(&id1, vec![]).await.unwrap();
+        let id2 = registry
             .create_job(JobKind::Generate, "openai", "gpt-image-2", "Fail")
             .await;
-        registry.fail_job(&id, "error".into()).await.unwrap();
+        registry.fail_job(&id2, "error".into()).await.unwrap();
 
         let expired = registry.expire_stale_jobs(0).await;
-        assert!(!expired.contains(&id));
+        assert!(!expired.contains(&id1));
+        assert!(!expired.contains(&id2));
         assert_eq!(
-            registry.get_job(&id).await.unwrap().status,
+            registry.get_job(&id1).await.unwrap().status,
+            JobStatus::Completed
+        );
+        assert_eq!(
+            registry.get_job(&id2).await.unwrap().status,
             JobStatus::Failed
         );
     }
 
     #[tokio::test]
-    async fn test_status_transition_queued_to_running_to_completed() {
+    async fn test_status_transition_full_lifecycle() {
         let registry = JobRegistry::new();
         let id = registry
             .create_job(JobKind::Edit, "azure", "gpt-image-2", "Full cycle")
             .await;
-        assert_eq!(
-            registry.get_job(&id).await.unwrap().status,
-            JobStatus::Queued
-        );
-
         registry
             .update_status(&id, JobStatus::Running)
             .await
             .unwrap();
-        assert_eq!(
-            registry.get_job(&id).await.unwrap().status,
-            JobStatus::Running
-        );
-
         let results = vec![ImageResult {
             file_path: "/tmp/out.png".into(),
             format: crate::types::OutputFormat::Png,
@@ -399,10 +375,8 @@ mod tests {
             .create_job(JobKind::Generate, "openai", "gpt-image-2", "Evict me")
             .await;
         registry.complete_job(&id, vec![]).await.unwrap();
-
         let evicted = registry.evict_terminal_jobs(0).await;
         assert!(evicted.contains(&id));
-        // Job should no longer exist
         assert!(registry.get_job(&id).await.is_err());
     }
 
@@ -416,7 +390,6 @@ mod tests {
             .update_status(&id, JobStatus::Running)
             .await
             .unwrap();
-
         let evicted = registry.evict_terminal_jobs(0).await;
         assert!(!evicted.contains(&id));
         assert_eq!(

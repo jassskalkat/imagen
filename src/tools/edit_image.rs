@@ -5,7 +5,7 @@ use uuid::Uuid;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
-use crate::tools::generate_image::{parse_quality, parse_size};
+use crate::tools::parse::{parse_quality, parse_size};
 use crate::types::EditRequest;
 
 /// Input parameters for the edit_image tool.

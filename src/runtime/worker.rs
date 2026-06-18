@@ -12,9 +12,8 @@ use crate::runtime::state::AppState;
 use crate::types::{GenerateRequest, ImageResult, OutputFormat};
 
 /// The background worker that processes queued image generation jobs.
-///
-/// It polls the job registry for queued jobs and runs them through
-/// the configured provider, respecting the concurrency limit.
+/// Polls the job registry for queued jobs, runs them through the configured
+/// provider, and respects the concurrency limit.
 pub struct Worker {
     state: AppState,
     semaphore: Arc<Semaphore>,
@@ -48,7 +47,6 @@ impl Worker {
     #[instrument(skip(self), name = "worker_loop")]
     async fn run(&self) {
         info!("Worker started, polling for jobs");
-
         loop {
             // Find queued jobs
             let queued_jobs = self
@@ -130,11 +128,19 @@ impl Worker {
                 job_handles.lock().await.push(handle);
             }
 
-            // Periodically evict old terminal jobs to prevent unbounded growth.
-            // Remove completed/failed/expired jobs older than 1 hour.
+            // Periodic maintenance: evict terminal jobs >1h, expire stale jobs >10min,
+            // and expire edit sessions >30min.
             let evicted = self.state.job_registry.evict_terminal_jobs(3600).await;
             if !evicted.is_empty() {
                 debug!(count = evicted.len(), "Evicted old terminal jobs");
+            }
+            let stale = self.state.job_registry.expire_stale_jobs(600).await;
+            if !stale.is_empty() {
+                warn!(count = stale.len(), "Expired stale jobs");
+            }
+            let sessions = self.state.expire_edit_sessions(1800).await;
+            if !sessions.is_empty() {
+                debug!(count = sessions.len(), "Expired old edit sessions");
             }
 
             // Clean up finished handles to prevent unbounded growth

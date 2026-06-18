@@ -5,3 +5,4 @@ pub mod estimate_cost;
 pub mod generate_image;
 pub mod get_config;
 pub mod list_models;
+pub mod parse;

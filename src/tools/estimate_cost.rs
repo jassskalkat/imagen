@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 use crate::cost;
 use crate::runtime::state::AppState;
-use crate::tools::generate_image::{parse_quality, parse_size};
+use crate::tools::parse::{parse_quality, parse_size};
 use crate::types::{ImageQuality, ImageSize};
 
 /// Input parameters for the estimate_cost tool.
@@ -16,6 +16,7 @@ pub struct EstimateCostInput {
     /// Number of images (1-4).
     pub n: Option<u8>,
     /// Operation type: "generate" or "edit".
+    #[allow(dead_code)] // Part of the public API schema for future cost differentiation
     pub operation: Option<String>,
 }
 
