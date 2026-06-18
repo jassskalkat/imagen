@@ -10,6 +10,8 @@ mod runtime;
 mod sandbox;
 mod tools;
 mod types;
+#[cfg(test)]
+mod test_utils;
 
 use std::sync::Arc;
 

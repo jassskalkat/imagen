@@ -94,90 +94,33 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Provider;
-    use crate::error::Result;
-    use crate::providers::ModelInfo;
-    use crate::types::{EditRequest, GenerateRequest, ProviderResponse};
-    use async_trait::async_trait;
+    use crate::test_utils::{mock_config, MockProvider};
+    use std::sync::Arc;
 
-    /// A mock provider for testing.
-    struct MockProvider;
-
-    #[async_trait]
-    impl ImageProvider for MockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![ModelInfo {
-                id: "mock-model".to_string(),
-                name: "Mock Model".to_string(),
-                supports_editing: true,
-                max_images: 4,
-            }]
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
-
-    fn test_config() -> AppConfig {
-        AppConfig {
-            provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
-            openai_api_key: Some("sk-test".into()),
-            openai_org_id: None,
-            output_dir: "/tmp/test".into(),
-            max_concurrent_jobs: 4,
-            default_model: "gpt-image-2".into(),
-        }
+    fn test_state() -> AppState {
+        AppState::new(mock_config("/tmp/test"), Arc::new(MockProvider))
     }
 
     #[tokio::test]
     async fn test_app_state_creation() {
-        let config = test_config();
-        let provider = Arc::new(MockProvider);
-        let state = AppState::new(config, provider);
-
-        assert_eq!(state.config.max_concurrent_jobs, 4);
+        let state = test_state();
+        assert_eq!(state.config.max_concurrent_jobs, 2);
         assert_eq!(state.provider.provider_name(), "mock");
     }
 
     #[tokio::test]
     async fn test_edit_session_lifecycle() {
-        let config = test_config();
-        let provider = Arc::new(MockProvider);
-        let state = AppState::new(config, provider);
+        let state = test_state();
 
-        // Create session
         state
             .upsert_edit_session("session-1", "/tmp/image.png")
             .await;
 
-        // Get session
         let session = state.get_edit_session("session-1").await.unwrap();
         assert_eq!(session.step_count, 1);
         assert_eq!(session.last_image_path, "/tmp/image.png");
         assert_eq!(session.provider, "mock");
 
-        // Update session
         state
             .upsert_edit_session("session-1", "/tmp/image2.png")
             .await;
@@ -188,28 +131,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_expire_edit_sessions() {
-        let config = test_config();
-        let provider = Arc::new(MockProvider);
-        let state = AppState::new(config, provider);
+        let state = test_state();
 
         state
             .upsert_edit_session("session-1", "/tmp/image.png")
             .await;
 
-        // With max_age of 0, it should expire immediately
         let expired = state.expire_edit_sessions(0).await;
         assert!(expired.contains(&"session-1".to_string()));
-
-        // Session should be gone
         assert!(state.get_edit_session("session-1").await.is_none());
     }
 
     #[tokio::test]
     async fn test_nonexistent_session() {
-        let config = test_config();
-        let provider = Arc::new(MockProvider);
-        let state = AppState::new(config, provider);
-
+        let state = test_state();
         assert!(state.get_edit_session("nonexistent").await.is_none());
     }
 }
