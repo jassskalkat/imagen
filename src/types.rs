@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Supported image sizes for generation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum ImageSize {
     #[serde(rename = "1024x1024")]
+    #[default]
     Square,
     #[serde(rename = "1536x1024")]
     Landscape,
@@ -25,30 +26,20 @@ impl ImageSize {
     }
 }
 
-impl Default for ImageSize {
-    fn default() -> Self {
-        ImageSize::Square
-    }
-}
-
 /// Image quality level.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageQuality {
+    #[default]
     Standard,
     Hd,
 }
 
-impl Default for ImageQuality {
-    fn default() -> Self {
-        ImageQuality::Standard
-    }
-}
-
 /// Output format for generated images.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
+    #[default]
     Png,
     Webp,
     Jpeg,
@@ -74,24 +65,13 @@ impl OutputFormat {
     }
 }
 
-impl Default for OutputFormat {
-    fn default() -> Self {
-        OutputFormat::Png
-    }
-}
-
 /// Image style preference.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageStyle {
+    #[default]
     Vivid,
     Natural,
-}
-
-impl Default for ImageStyle {
-    fn default() -> Self {
-        ImageStyle::Vivid
-    }
 }
 
 /// Request to generate a new image.

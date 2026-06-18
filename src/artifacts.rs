@@ -11,12 +11,7 @@ use crate::types::OutputFormat;
 ///
 /// The path is: `{output_dir}/{job_id}/{hash}.{extension}`
 /// where hash is derived from job_id + index for predictability.
-pub fn artifact_path(
-    output_dir: &str,
-    job_id: &str,
-    index: u32,
-    format: &OutputFormat,
-) -> PathBuf {
+pub fn artifact_path(output_dir: &str, job_id: &str, index: u32, format: &OutputFormat) -> PathBuf {
     let mut hasher = Sha256::new();
     hasher.update(job_id.as_bytes());
     hasher.update(index.to_le_bytes());
@@ -113,7 +108,9 @@ mod tests {
         let path = dir.join("test-job").join("test.png");
 
         let data = b"fake image data";
-        let size = save_artifact(&path, data, dir.to_str().unwrap()).await.unwrap();
+        let size = save_artifact(&path, data, dir.to_str().unwrap())
+            .await
+            .unwrap();
         assert_eq!(size, data.len() as u64);
 
         let read_back = read_artifact(&path).await.unwrap();

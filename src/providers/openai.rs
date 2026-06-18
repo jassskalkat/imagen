@@ -7,9 +7,7 @@ use tracing::{debug, instrument};
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
 use crate::retry::with_retry;
-use crate::types::{
-    EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo,
-};
+use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo};
 
 use super::{ImageProvider, ModelInfo};
 
@@ -44,11 +42,7 @@ impl OpenAIProvider {
         })
     }
 
-    fn parse_response(
-        &self,
-        body: serde_json::Value,
-        model: &str,
-    ) -> Result<ProviderResponse> {
+    fn parse_response(&self, body: serde_json::Value, model: &str) -> Result<ProviderResponse> {
         let data = body["data"]
             .as_array()
             .ok_or_else(|| ImagenError::ProviderError {
@@ -81,10 +75,7 @@ impl OpenAIProvider {
 impl ImageProvider for OpenAIProvider {
     #[instrument(skip(self, request), fields(provider = "openai"))]
     async fn generate(&self, request: &GenerateRequest) -> Result<ProviderResponse> {
-        let model = request
-            .model
-            .as_deref()
-            .unwrap_or(&self.default_model);
+        let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         let size = request
             .size
@@ -113,7 +104,10 @@ impl ImageProvider for OpenAIProvider {
             body["style"] = serde_json::to_value(style).unwrap_or(json!("vivid"));
         }
 
-        debug!(url = OPENAI_GENERATIONS_URL, "Sending generation request to OpenAI");
+        debug!(
+            url = OPENAI_GENERATIONS_URL,
+            "Sending generation request to OpenAI"
+        );
 
         let model_owned = model.to_string();
         with_retry(|| {
@@ -146,10 +140,7 @@ impl ImageProvider for OpenAIProvider {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
                         code => ImagenError::ProviderError {
-                            message: format!(
-                                "OpenAI API error ({}): {}",
-                                status, error_msg
-                            ),
+                            message: format!("OpenAI API error ({}): {}", status, error_msg),
                             status_code: Some(code),
                         },
                     });
@@ -163,10 +154,7 @@ impl ImageProvider for OpenAIProvider {
 
     #[instrument(skip(self, request), fields(provider = "openai"))]
     async fn edit(&self, request: &EditRequest) -> Result<ProviderResponse> {
-        let model = request
-            .model
-            .as_deref()
-            .unwrap_or(&self.default_model);
+        let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Read file bytes outside the retry loop
         let image_bytes = if let Some(image_path) = request.image_paths.first() {
@@ -256,10 +244,7 @@ impl ImageProvider for OpenAIProvider {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
                         code => ImagenError::ProviderError {
-                            message: format!(
-                                "OpenAI API error ({}): {}",
-                                status, error_msg
-                            ),
+                            message: format!("OpenAI API error ({}): {}", status, error_msg),
                             status_code: Some(code),
                         },
                     });
@@ -292,7 +277,6 @@ impl ImageProvider for OpenAIProvider {
         "openai"
     }
 }
-
 
 #[cfg(test)]
 mod tests {

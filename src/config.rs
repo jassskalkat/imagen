@@ -41,8 +41,8 @@ impl AppConfig {
             }
         };
 
-        let output_dir = std::env::var("IMAGEN_OUTPUT_DIR")
-            .unwrap_or_else(|_| "./imagen-output".into());
+        let output_dir =
+            std::env::var("IMAGEN_OUTPUT_DIR").unwrap_or_else(|_| "./imagen-output".into());
 
         let max_concurrent_jobs: usize = std::env::var("IMAGEN_MAX_CONCURRENT_JOBS")
             .unwrap_or_else(|_| "4".into())
@@ -51,8 +51,8 @@ impl AppConfig {
                 ImagenError::ConfigError(format!("Invalid IMAGEN_MAX_CONCURRENT_JOBS: {e}"))
             })?;
 
-        let default_model = std::env::var("IMAGEN_DEFAULT_MODEL")
-            .unwrap_or_else(|_| "gpt-image-2".into());
+        let default_model =
+            std::env::var("IMAGEN_DEFAULT_MODEL").unwrap_or_else(|_| "gpt-image-2".into());
 
         let config = AppConfig {
             provider,
@@ -109,8 +109,8 @@ mod tests {
 
     #[test]
     #[ignore] // This test mutates process environment variables without synchronization.
-    // Cargo runs tests in parallel, so set_var/remove_var can race with other tests.
-    // Use `cargo test -- --ignored` to run it in isolation.
+              // Cargo runs tests in parallel, so set_var/remove_var can race with other tests.
+              // Use `cargo test -- --ignored` to run it in isolation.
     fn test_config_from_env_openai() {
         // Set minimal env vars for OpenAI
         std::env::set_var("IMAGEN_PROVIDER", "openai");

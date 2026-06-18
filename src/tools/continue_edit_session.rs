@@ -39,20 +39,12 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
     let session = state
         .get_edit_session(&input.session_id)
         .await
-        .ok_or_else(|| {
-            format!(
-                "Edit session '{}' not found or expired.",
-                input.session_id
-            )
-        })?;
+        .ok_or_else(|| format!("Edit session '{}' not found or expired.", input.session_id))?;
 
     // Validate session's last image still exists and is safe
-    validate_input_path(&session.last_image_path).await.map_err(|e| {
-        format!(
-            "Session image no longer valid: {}",
-            e
-        )
-    })?;
+    validate_input_path(&session.last_image_path)
+        .await
+        .map_err(|e| format!("Session image no longer valid: {}", e))?;
 
     // Validate mask file if provided
     if let Some(ref mask) = input.mask_path {

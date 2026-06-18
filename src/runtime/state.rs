@@ -39,10 +39,7 @@ impl std::fmt::Debug for AppState {
 
 impl AppState {
     /// Create a new AppState with the given config and provider.
-    pub fn new(
-        config: AppConfig,
-        provider: Arc<dyn ImageProvider>,
-    ) -> Self {
+    pub fn new(config: AppConfig, provider: Arc<dyn ImageProvider>) -> Self {
         Self {
             config: Arc::new(config),
             job_registry: Arc::new(JobRegistry::new()),
@@ -52,11 +49,7 @@ impl AppState {
     }
 
     /// Create or update an edit session.
-    pub async fn upsert_edit_session(
-        &self,
-        session_id: &str,
-        image_path: &str,
-    ) {
+    pub async fn upsert_edit_session(&self, session_id: &str, image_path: &str) {
         let mut sessions = self.edit_sessions.write().await;
         let entry = sessions
             .entry(session_id.to_string())

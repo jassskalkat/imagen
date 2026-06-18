@@ -38,8 +38,7 @@ where
                     return Err(err);
                 }
 
-                let base_ms = BASE_DELAY.as_millis() as u64
-                    * (BACKOFF_FACTOR.pow(attempt) as u64);
+                let base_ms = BASE_DELAY.as_millis() as u64 * (BACKOFF_FACTOR.pow(attempt) as u64);
                 let jitter_ms = rand::thread_rng().gen_range(0..=100);
                 let delay = Duration::from_millis(base_ms + jitter_ms);
 

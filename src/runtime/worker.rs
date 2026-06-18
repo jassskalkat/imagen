@@ -97,15 +97,11 @@ impl Worker {
 
                     debug!(job_id = %job_id, "Processing generate job");
 
-                    let result =
-                        process_generate_job(&state, &job_id, &job.prompt).await;
+                    let result = process_generate_job(&state, &job_id, &job.prompt).await;
 
                     match result {
                         Ok(results) => {
-                            if let Err(e) = state
-                                .job_registry
-                                .complete_job(&job_id, results)
-                                .await
+                            if let Err(e) = state.job_registry.complete_job(&job_id, results).await
                             {
                                 error!(
                                     job_id = %job_id,
@@ -118,10 +114,8 @@ impl Worker {
                         }
                         Err(e) => {
                             error!(job_id = %job_id, error = %e, "Job failed");
-                            if let Err(err) = state
-                                .job_registry
-                                .fail_job(&job_id, e.to_string())
-                                .await
+                            if let Err(err) =
+                                state.job_registry.fail_job(&job_id, e.to_string()).await
                             {
                                 error!(
                                     job_id = %job_id,
@@ -138,11 +132,7 @@ impl Worker {
 
             // Periodically evict old terminal jobs to prevent unbounded growth.
             // Remove completed/failed/expired jobs older than 1 hour.
-            let evicted = self
-                .state
-                .job_registry
-                .evict_terminal_jobs(3600)
-                .await;
+            let evicted = self.state.job_registry.evict_terminal_jobs(3600).await;
             if !evicted.is_empty() {
                 debug!(count = evicted.len(), "Evicted old terminal jobs");
             }
@@ -211,16 +201,12 @@ async fn save_provider_response(
     let mut results = Vec::new();
 
     for (index, image) in response.images.iter().enumerate() {
-        let path = artifacts::artifact_path(
-            &state.config.output_dir,
-            job_id,
-            index as u32,
-            &format,
-        );
+        let path =
+            artifacts::artifact_path(&state.config.output_dir, job_id, index as u32, &format);
 
-        let bytes = STANDARD
-            .decode(&image.b64_json)
-            .map_err(|e| crate::error::ImagenError::Internal(format!("Base64 decode error: {e}")))?;
+        let bytes = STANDARD.decode(&image.b64_json).map_err(|e| {
+            crate::error::ImagenError::Internal(format!("Base64 decode error: {e}"))
+        })?;
 
         let size_bytes = artifacts::save_artifact(&path, &bytes, &state.config.output_dir).await?;
 
@@ -260,24 +246,35 @@ mod tests {
         }
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
             Ok(ProviderResponse {
-                images: vec![ImageData { b64_json: "dGVzdA==".to_string(), revised_prompt: None }],
+                images: vec![ImageData {
+                    b64_json: "dGVzdA==".to_string(),
+                    revised_prompt: None,
+                }],
                 model: "mock".to_string(),
                 usage: None,
             })
         }
-        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
-        fn provider_name(&self) -> &'static str { "mock" }
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
     }
 
     fn test_state() -> AppState {
         let config = AppConfig {
             provider: Provider::OpenAI,
-            azure_endpoint: None, azure_deployment_name: None,
-            azure_api_key: None, azure_api_version: None,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
             openai_api_key: Some("sk-test".into()),
             openai_org_id: None,
             output_dir: std::env::temp_dir()
-                .join("imagen-worker-test").to_string_lossy().to_string(),
+                .join("imagen-worker-test")
+                .to_string_lossy()
+                .to_string(),
             max_concurrent_jobs: 2,
             default_model: "gpt-image-2".into(),
         };
@@ -314,10 +311,9 @@ mod tests {
         assert!(results[0].file_path.ends_with(".png"));
 
         // Cleanup
-        let _ = tokio::fs::remove_dir_all(
-            std::path::Path::new(&state.config.output_dir).join(&job_id),
-        )
-        .await;
+        let _ =
+            tokio::fs::remove_dir_all(std::path::Path::new(&state.config.output_dir).join(&job_id))
+                .await;
     }
 
     #[tokio::test]
@@ -325,7 +321,12 @@ mod tests {
         let state = test_state();
         let edit_job_id = state
             .job_registry
-            .create_job(crate::jobs::JobKind::Edit, "mock", "gpt-image-2", "Edit prompt")
+            .create_job(
+                crate::jobs::JobKind::Edit,
+                "mock",
+                "gpt-image-2",
+                "Edit prompt",
+            )
             .await;
 
         let token = CancellationToken::new();
@@ -346,7 +347,12 @@ mod tests {
         let state = test_state();
         let job_id = state
             .job_registry
-            .create_job(crate::jobs::JobKind::Generate, "mock", "gpt-image-2", "Worker test")
+            .create_job(
+                crate::jobs::JobKind::Generate,
+                "mock",
+                "gpt-image-2",
+                "Worker test",
+            )
             .await;
 
         let token = CancellationToken::new();
@@ -360,9 +366,9 @@ mod tests {
 
         token.cancel();
         let _ = handle.await;
-        let _ = tokio::fs::remove_dir_all(
-            std::path::Path::new(&state.config.output_dir).join(&job_id),
-        ).await;
+        let _ =
+            tokio::fs::remove_dir_all(std::path::Path::new(&state.config.output_dir).join(&job_id))
+                .await;
     }
 
     #[tokio::test]
@@ -377,6 +383,9 @@ mod tests {
 
         // Worker should exit within a short time
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        assert!(result.is_ok(), "Worker should have stopped after cancellation");
+        assert!(
+            result.is_ok(),
+            "Worker should have stopped after cancellation"
+        );
     }
 }

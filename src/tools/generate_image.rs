@@ -169,7 +169,10 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         }
         Err(e) => {
             let error_msg = e.to_string();
-            let _ = state.job_registry.fail_job(&job_id, error_msg.clone()).await;
+            let _ = state
+                .job_registry
+                .fail_job(&job_id, error_msg.clone())
+                .await;
             format!("failed: {error_msg}")
         }
     };
@@ -208,10 +211,18 @@ mod tests {
             })
         }
         async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse { images: vec![], model: "mock".to_string(), usage: None })
+            Ok(ProviderResponse {
+                images: vec![],
+                model: "mock".to_string(),
+                usage: None,
+            })
         }
-        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
-        fn provider_name(&self) -> &'static str { "mock" }
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
     }
 
     fn test_state() -> AppState {
@@ -284,7 +295,11 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "   ".to_string(),
-            size: None, quality: None, style: None, output_format: None, n: None,
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -297,7 +312,10 @@ mod tests {
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
             size: Some("999x999".to_string()),
-            quality: None, style: None, output_format: None, n: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -309,8 +327,11 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None, quality: Some("ultra".to_string()),
-            style: None, output_format: None, n: None,
+            size: None,
+            quality: Some("ultra".to_string()),
+            style: None,
+            output_format: None,
+            n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -322,7 +343,11 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None, quality: None, style: None, output_format: None, n: Some(0),
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: Some(0),
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -334,7 +359,11 @@ mod tests {
         let state = test_state();
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None, quality: None, style: None, output_format: None, n: Some(5),
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: Some(5),
         };
         let result = run(&state, input).await;
         assert!(result.is_err());
@@ -357,8 +386,12 @@ mod tests {
                 status_code: Some(503),
             })
         }
-        fn get_models(&self) -> Vec<ModelInfo> { vec![] }
-        fn provider_name(&self) -> &'static str { "mock" }
+        fn get_models(&self) -> Vec<ModelInfo> {
+            vec![]
+        }
+        fn provider_name(&self) -> &'static str {
+            "mock"
+        }
     }
 
     #[tokio::test]
@@ -381,7 +414,11 @@ mod tests {
         let state = AppState::new(config, Arc::new(FailingMockProvider));
         let input = GenerateImageInput {
             prompt: "A cat".to_string(),
-            size: None, quality: None, style: None, output_format: None, n: None,
+            size: None,
+            quality: None,
+            style: None,
+            output_format: None,
+            n: None,
         };
         let result = run(&state, input).await;
         assert!(result.is_ok(), "Should return Ok with failed status");

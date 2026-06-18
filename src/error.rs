@@ -86,7 +86,10 @@ impl ImagenError {
     pub fn is_transient(&self) -> bool {
         match self {
             ImagenError::RateLimit(_) => true,
-            ImagenError::ProviderError { status_code, message } => {
+            ImagenError::ProviderError {
+                status_code,
+                message,
+            } => {
                 // Retry on 5xx status codes
                 if let Some(code) = status_code {
                     return *code >= 500 && *code < 600;
@@ -148,10 +151,7 @@ mod tests {
                 },
                 "Provider error: 500",
             ),
-            (
-                ImagenError::JobNotFound("abc".into()),
-                "Job not found: abc",
-            ),
+            (ImagenError::JobNotFound("abc".into()), "Job not found: abc"),
             (
                 ImagenError::SessionExpired("sess-1".into()),
                 "Session expired: sess-1",
@@ -164,10 +164,7 @@ mod tests {
                 ImagenError::ConfigError("bad config".into()),
                 "Configuration error: bad config",
             ),
-            (
-                ImagenError::Internal("oops".into()),
-                "Internal error: oops",
-            ),
+            (ImagenError::Internal("oops".into()), "Internal error: oops"),
         ];
 
         for (err, expected) in cases {
@@ -184,8 +181,7 @@ mod tests {
 
     #[test]
     fn test_io_error_permission_denied_conversion() {
-        let io_err =
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
         let err: ImagenError = io_err.into();
         assert!(matches!(err, ImagenError::FileError(_)));
         assert!(err.to_string().contains("access denied"));

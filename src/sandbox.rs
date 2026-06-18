@@ -17,10 +17,7 @@ pub fn validate_output_path(path: &Path, output_dir: &str) -> Result<()> {
     // Otherwise, canonicalize its nearest existing ancestor.
     let resolved = if path.exists() {
         std::fs::canonicalize(path).map_err(|e| {
-            ImagenError::InvalidInput(format!(
-                "Cannot resolve path '{}': {e}",
-                path.display()
-            ))
+            ImagenError::InvalidInput(format!("Cannot resolve path '{}': {e}", path.display()))
         })?
     } else {
         // Walk up to find an existing ancestor
@@ -94,9 +91,9 @@ pub async fn validate_input_path(path: &str) -> Result<()> {
     }
 
     // Verify path exists and is a regular file (async to avoid blocking the runtime)
-    let metadata = tokio::fs::metadata(p).await.map_err(|_| {
-        ImagenError::InvalidInput(format!("Path does not exist: '{path}'"))
-    })?;
+    let metadata = tokio::fs::metadata(p)
+        .await
+        .map_err(|_| ImagenError::InvalidInput(format!("Path does not exist: '{path}'")))?;
 
     if !metadata.is_file() {
         return Err(ImagenError::InvalidInput(format!(

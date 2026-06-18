@@ -41,7 +41,9 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     }
 
     // Validate input paths for path traversal and null bytes
-    validate_input_path(&input.image_path).await.map_err(|e| e.to_string())?;
+    validate_input_path(&input.image_path)
+        .await
+        .map_err(|e| e.to_string())?;
     if let Some(ref mask) = input.mask_path {
         validate_input_path(mask).await.map_err(|e| e.to_string())?;
     }
@@ -52,10 +54,7 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         .map(|m| m.is_file())
         .unwrap_or(false)
     {
-        return Err(format!(
-            "Image file not found: '{}'",
-            input.image_path
-        ));
+        return Err(format!("Image file not found: '{}'", input.image_path));
     }
 
     // Validate mask file if provided
@@ -275,7 +274,9 @@ mod tests {
     async fn test_nonexistent_mask_path_returns_error() {
         // Create a temporary image file so image_path validation passes
         let tmp_image = std::env::temp_dir().join("imagen-edit-test-img.png");
-        tokio::fs::write(&tmp_image, b"fake image data").await.unwrap();
+        tokio::fs::write(&tmp_image, b"fake image data")
+            .await
+            .unwrap();
 
         let state = test_state();
         let input = EditImageInput {

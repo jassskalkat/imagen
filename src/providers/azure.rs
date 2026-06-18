@@ -7,9 +7,7 @@ use tracing::{debug, instrument};
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
 use crate::retry::with_retry;
-use crate::types::{
-    EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo,
-};
+use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo};
 
 use super::{ImageProvider, ModelInfo};
 
@@ -36,9 +34,7 @@ impl AzureProvider {
         let deployment = config
             .azure_deployment_name
             .as_deref()
-            .ok_or_else(|| {
-                ImagenError::ConfigError("Azure deployment name not configured".into())
-            })?
+            .ok_or_else(|| ImagenError::ConfigError("Azure deployment name not configured".into()))?
             .to_string();
 
         let api_key = config
@@ -80,11 +76,7 @@ impl AzureProvider {
         )
     }
 
-    fn parse_response(
-        &self,
-        body: serde_json::Value,
-        model: &str,
-    ) -> Result<ProviderResponse> {
+    fn parse_response(&self, body: serde_json::Value, model: &str) -> Result<ProviderResponse> {
         let data = body["data"]
             .as_array()
             .ok_or_else(|| ImagenError::ProviderError {
@@ -117,10 +109,7 @@ impl AzureProvider {
 impl ImageProvider for AzureProvider {
     #[instrument(skip(self, request), fields(provider = "azure"))]
     async fn generate(&self, request: &GenerateRequest) -> Result<ProviderResponse> {
-        let model = request
-            .model
-            .as_deref()
-            .unwrap_or(&self.default_model);
+        let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         let size = request
             .size
@@ -177,10 +166,7 @@ impl ImageProvider for AzureProvider {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
                         code => ImagenError::ProviderError {
-                            message: format!(
-                                "Azure API error ({}): {}",
-                                status, error_msg
-                            ),
+                            message: format!("Azure API error ({}): {}", status, error_msg),
                             status_code: Some(code),
                         },
                     });
@@ -194,10 +180,7 @@ impl ImageProvider for AzureProvider {
 
     #[instrument(skip(self, request), fields(provider = "azure"))]
     async fn edit(&self, request: &EditRequest) -> Result<ProviderResponse> {
-        let model = request
-            .model
-            .as_deref()
-            .unwrap_or(&self.default_model);
+        let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Read file bytes outside the retry loop
         let image_bytes = if let Some(image_path) = request.image_paths.first() {
@@ -282,10 +265,7 @@ impl ImageProvider for AzureProvider {
                         401 | 403 => ImagenError::ProviderAuth(error_msg.to_string()),
                         429 => ImagenError::RateLimit(error_msg.to_string()),
                         code => ImagenError::ProviderError {
-                            message: format!(
-                                "Azure API error ({}): {}",
-                                status, error_msg
-                            ),
+                            message: format!("Azure API error ({}): {}", status, error_msg),
                             status_code: Some(code),
                         },
                     });
@@ -310,7 +290,6 @@ impl ImageProvider for AzureProvider {
         "azure"
     }
 }
-
 
 #[cfg(test)]
 mod tests {
