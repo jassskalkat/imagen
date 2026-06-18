@@ -193,105 +193,17 @@ async fn process_generate_job(
     };
 
     let response = state.provider.generate(&request).await?;
-    save_provider_response(state, job_id, &response).await
-}
-
-/// Save all images from a provider response as artifacts and return results.
-async fn save_provider_response(
-    state: &AppState,
-    job_id: &str,
-    response: &crate::types::ProviderResponse,
-) -> crate::error::Result<Vec<ImageResult>> {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-
-    let format = OutputFormat::Png;
-    let mut results = Vec::new();
-
-    for (index, image) in response.images.iter().enumerate() {
-        let path =
-            artifacts::artifact_path(&state.config.output_dir, job_id, index as u32, &format);
-
-        let bytes = STANDARD.decode(&image.b64_json).map_err(|e| {
-            crate::error::ImagenError::Internal(format!("Base64 decode error: {e}"))
-        })?;
-
-        let size_bytes = artifacts::save_artifact(&path, &bytes, &state.config.output_dir).await?;
-
-        results.push(ImageResult {
-            file_path: path.to_string_lossy().to_string(),
-            format: format.clone(),
-            size_bytes,
-            revised_prompt: image.revised_prompt.clone(),
-        });
-    }
-
-    Ok(results)
+    artifacts::save_provider_response(&state.config.output_dir, job_id, &response, &OutputFormat::Png).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, Provider};
-    use crate::error::Result;
-    use crate::providers::{ImageProvider, ModelInfo};
-    use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse};
-    use async_trait::async_trait;
-
-    struct MockProvider;
-
-    #[async_trait]
-    impl ImageProvider for MockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![ImageData {
-                    b64_json: "dGVzdA==".to_string(),
-                    revised_prompt: Some("A test image".to_string()),
-                }],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![ImageData {
-                    b64_json: "dGVzdA==".to_string(),
-                    revised_prompt: None,
-                }],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
-
-    fn test_state() -> AppState {
-        let config = AppConfig {
-            provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
-            openai_api_key: Some("sk-test".into()),
-            openai_org_id: None,
-            output_dir: std::env::temp_dir()
-                .join("imagen-worker-test")
-                .to_string_lossy()
-                .to_string(),
-            max_concurrent_jobs: 2,
-            default_model: "gpt-image-2".into(),
-        };
-        AppState::new(config, Arc::new(MockProvider))
-    }
+    use crate::test_utils::mock_state;
 
     #[test]
     fn test_worker_creation() {
-        let state = test_state();
+        let state = mock_state("imagen-worker-test");
         let token = CancellationToken::new();
         let worker = Worker::new(state.clone(), token);
         assert_eq!(worker.poll_interval, Duration::from_millis(500));
@@ -299,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_generate_job() {
-        let state = test_state();
+        let state = mock_state("imagen-worker-test");
         let job_id = state
             .job_registry
             .create_job(
@@ -318,7 +230,6 @@ mod tests {
         assert_eq!(results[0].revised_prompt, Some("A test image".to_string()));
         assert!(results[0].file_path.ends_with(".png"));
 
-        // Cleanup
         let _ =
             tokio::fs::remove_dir_all(std::path::Path::new(&state.config.output_dir).join(&job_id))
                 .await;
@@ -326,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_skips_edit_jobs() {
-        let state = test_state();
+        let state = mock_state("imagen-worker-test");
         let edit_job_id = state
             .job_registry
             .create_job(
@@ -342,7 +253,6 @@ mod tests {
         let handle = worker.spawn();
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        // The edit job should still be in Queued state (skipped by worker)
         let job = state.job_registry.get_job(&edit_job_id).await.unwrap();
         assert_eq!(job.status, JobStatus::Queued);
 
@@ -352,7 +262,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_processes_queued_job() {
-        let state = test_state();
+        let state = mock_state("imagen-worker-test");
         let job_id = state
             .job_registry
             .create_job(
@@ -381,15 +291,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_stops_on_cancellation() {
-        let state = test_state();
+        let state = mock_state("imagen-worker-test");
         let token = CancellationToken::new();
         let worker = Worker::new(state.clone(), token.clone());
         let handle = worker.spawn();
 
-        // Cancel immediately
         token.cancel();
 
-        // Worker should exit within a short time
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
         assert!(
             result.is_ok(),

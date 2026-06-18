@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
 use crate::jobs::JobKind;
@@ -45,10 +46,17 @@ pub struct EditImageOutput {
     pub status: String,
 }
 
+/// Maximum prompt length in bytes accepted by the server.
+const MAX_PROMPT_LEN: usize = 4000;
+
 /// Execute the edit_image tool logic.
+#[instrument(skip(state), fields(prompt_len = input.prompt.len()))]
 pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, String> {
     if input.prompt.trim().is_empty() {
         return Err("Prompt cannot be empty.".to_string());
+    }
+    if input.prompt.len() > MAX_PROMPT_LEN {
+        return Err(format!("Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."));
     }
     if input.image_path.trim().is_empty() {
         return Err("image_path cannot be empty.".to_string());
@@ -125,16 +133,13 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
 
-    // Create job and immediately mark as Running to prevent the background
-    // worker from picking it up (avoids double-execution race).
+    // Create job directly in Running state to eliminate the TOCTOU race.
     let job_id = state
         .job_registry
-        .create_job(JobKind::Edit, provider_name, &model, &input.prompt)
+        .create_job_running(JobKind::Edit, provider_name, &model, &input.prompt)
         .await;
-    let _ = state
-        .job_registry
-        .update_status(&job_id, crate::jobs::JobStatus::Running)
-        .await;
+
+    info!(job_id = %job_id, model = %model, "edit_image job started");
 
     // Create a new edit session
     let session_id = Uuid::new_v4().to_string();
@@ -157,41 +162,33 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 
     // Submit to provider
     let result = state.provider.edit(&request).await;
+    let fmt = crate::types::OutputFormat::default();
     match result {
         Ok(response) => {
-            let mut results = Vec::new();
-            let mut last_path = input.image_path.clone();
-            for (i, img) in response.images.iter().enumerate() {
-                let bytes = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &img.b64_json,
-                )
-                .map_err(|e| format!("Failed to decode image data: {e}"))?;
-
-                let fmt = crate::types::OutputFormat::default();
-                let path = crate::artifacts::artifact_path(
-                    &state.config.output_dir,
-                    &job_id,
-                    i as u32,
-                    &fmt,
-                );
-                crate::artifacts::save_artifact(&path, &bytes, &state.config.output_dir)
-                    .await
-                    .map_err(|e| format!("Failed to save artifact: {e}"))?;
-
-                last_path = path.to_string_lossy().to_string();
-                results.push(crate::types::ImageResult {
-                    file_path: last_path.clone(),
-                    format: fmt,
-                    size_bytes: bytes.len() as u64,
-                    revised_prompt: img.revised_prompt.clone(),
-                });
-            }
-            let _ = state.job_registry.complete_job(&job_id, results).await;
-            // Record session with the last produced image
+            let last_path = match crate::artifacts::save_provider_response(
+                &state.config.output_dir,
+                &job_id,
+                &response,
+                &fmt,
+            )
+            .await
+            {
+                Ok(results) => {
+                    let last = results.last().map(|r| r.file_path.clone()).unwrap_or_else(|| input.image_path.clone());
+                    info!(job_id = %job_id, count = results.len(), "edit_image job completed");
+                    let _ = state.job_registry.complete_job(&job_id, results).await;
+                    last
+                }
+                Err(e) => {
+                    warn!(job_id = %job_id, error = %e, "edit_image artifact save failed");
+                    let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
+                    input.image_path.clone()
+                }
+            };
             state.upsert_edit_session(&session_id, &last_path).await;
         }
         Err(e) => {
+            warn!(job_id = %job_id, error = %e, "edit_image provider call failed");
             let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
             // Still record session with original image
             state
@@ -212,59 +209,10 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, Provider};
-    use crate::error::Result;
-    use crate::providers::{ImageProvider, ModelInfo};
-    use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-
-    struct MockProvider;
-
-    #[async_trait]
-    impl ImageProvider for MockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![ImageData {
-                    b64_json: "dGVzdA==".to_string(),
-                    revised_prompt: None,
-                }],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
+    use crate::test_utils::mock_state;
 
     fn test_state() -> AppState {
-        let config = AppConfig {
-            provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
-            openai_api_key: Some("sk-test".into()),
-            openai_org_id: None,
-            output_dir: std::env::temp_dir()
-                .join("imagen-edit-test")
-                .to_string_lossy()
-                .to_string(),
-            max_concurrent_jobs: 2,
-            default_model: "gpt-image-2".into(),
-        };
-        AppState::new(config, Arc::new(MockProvider))
+        mock_state("imagen-edit-test")
     }
 
     fn make_input(image_path: &str, prompt: &str) -> EditImageInput {

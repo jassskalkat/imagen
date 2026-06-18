@@ -1,11 +1,13 @@
 use std::path::{Path, PathBuf};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
 use crate::error::{ImagenError, Result};
 use crate::sandbox::validate_output_path;
-use crate::types::OutputFormat;
+use crate::types::{ImageResult, OutputFormat, ProviderResponse};
 
 /// Generate a deterministic file path for a job artifact.
 ///
@@ -56,6 +58,33 @@ pub async fn read_artifact(path: &Path) -> Result<Vec<u8>> {
 #[allow(dead_code)] // Part of the public API for future artifact management features
 pub async fn artifact_exists(path: &Path) -> bool {
     fs::metadata(path).await.is_ok()
+}
+
+/// Decode and save all images from a provider response, returning one `ImageResult` per image.
+///
+/// This is the single canonical implementation used by `generate_image`,
+/// `edit_image`, and `continue_edit_session` so the logic lives in one place.
+pub async fn save_provider_response(
+    output_dir: &str,
+    job_id: &str,
+    response: &ProviderResponse,
+    format: &OutputFormat,
+) -> Result<Vec<ImageResult>> {
+    let mut results = Vec::with_capacity(response.images.len());
+    for (index, image) in response.images.iter().enumerate() {
+        let path = artifact_path(output_dir, job_id, index as u32, format);
+        let bytes = B64.decode(&image.b64_json).map_err(|e| {
+            ImagenError::Internal(format!("Base64 decode error: {e}"))
+        })?;
+        let size_bytes = save_artifact(&path, &bytes, output_dir).await?;
+        results.push(ImageResult {
+            file_path: path.to_string_lossy().to_string(),
+            format: format.clone(),
+            size_bytes,
+            revised_prompt: image.revised_prompt.clone(),
+        });
+    }
+    Ok(results)
 }
 
 #[cfg(test)]
