@@ -129,6 +129,7 @@ impl JobRegistry {
     }
 
     /// Update a job's status.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn update_status(&self, job_id: &str, status: JobStatus) -> Result<()> {
         let mut jobs = self.jobs.write().await;
         let job = jobs
@@ -182,6 +183,7 @@ impl JobRegistry {
     }
 
     /// List all jobs, optionally filtered by status.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn list_jobs(&self, status_filter: Option<&JobStatus>) -> Vec<Job> {
         let jobs = self.jobs.read().await;
         jobs.values()

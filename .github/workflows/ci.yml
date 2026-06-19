@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/*"]
+    branches: [main, "feat/*", "fix/*", "refactor/*", "**"]
   pull_request:
     branches: [main]
 
@@ -19,13 +19,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build
+        run: cargo build --locked
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Clippy
-        run: cargo clippy -- -D warnings -A dead_code
+        run: cargo clippy --locked -- -D warnings -A dead_code
 
       - name: Format check
         run: cargo fmt --check

@@ -42,7 +42,8 @@ pub struct EditImageInput {
 #[derive(Debug, Serialize)]
 pub struct EditImageOutput {
     pub job_id: String,
-    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub status: String,
 }
 
@@ -141,9 +142,6 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 
     info!(job_id = %job_id, model = %model, "edit_image job started");
 
-    // Create a new edit session
-    let session_id = Uuid::new_v4().to_string();
-
     // Build edit request
     let request = EditRequest {
         prompt: input.prompt,
@@ -163,8 +161,9 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     // Submit to provider
     let result = state.provider.edit(&request).await;
     let fmt = crate::types::OutputFormat::default();
-    match result {
+    let session_id = match result {
         Ok(response) => {
+            let sid = Uuid::new_v4().to_string();
             let last_path = match crate::artifacts::save_provider_response(
                 &state.config.output_dir,
                 &job_id,
@@ -185,17 +184,17 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
                     input.image_path.clone()
                 }
             };
-            state.upsert_edit_session(&session_id, &last_path).await;
+            // Only create/update the session when the edit actually produced output.
+            state.upsert_edit_session(&sid, &last_path).await;
+            Some(sid)
         }
         Err(e) => {
             warn!(job_id = %job_id, error = %e, "edit_image provider call failed");
             let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
-            // Still record session with original image
-            state
-                .upsert_edit_session(&session_id, &input.image_path)
-                .await;
+            // Do NOT create a session — the edit failed and there is no new image.
+            None
         }
-    }
+    };
 
     let output = EditImageOutput {
         job_id,
