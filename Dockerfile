@@ -2,7 +2,7 @@
 # Stage 1: Builder
 # Uses the official Rust image to compile a fully static release binary.
 # =============================================================================
-FROM rust:1.82-slim AS builder
+FROM rust:1.95-slim AS builder
 
 # Install system dependencies required by reqwest (OpenSSL/TLS support)
 RUN apt-get update && \
@@ -19,12 +19,12 @@ COPY Cargo.toml Cargo.lock ./
 # Create a dummy main.rs so cargo can resolve and build all dependencies.
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
+    cargo build --locked --release && \
     rm -rf src
 
 # Now copy the actual source code and build the real binary.
 COPY src/ src/
-RUN cargo build --release
+RUN touch src/main.rs && cargo build --locked --release
 
 # =============================================================================
 # Stage 2: Runtime

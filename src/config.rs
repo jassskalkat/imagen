@@ -99,6 +99,16 @@ impl AppConfig {
                 }
             }
         }
+
+        // Create the output directory now so permission / path problems surface at startup
+        // rather than silently failing on the first job.
+        std::fs::create_dir_all(&self.output_dir).map_err(|e| {
+            ImagenError::ConfigError(format!(
+                "Cannot create output directory '{}': {e}",
+                self.output_dir
+            ))
+        })?;
+
         Ok(())
     }
 }
@@ -140,7 +150,7 @@ mod tests {
             azure_api_version: None,
             openai_api_key: None,
             openai_org_id: None,
-            output_dir: "./out".into(),
+            output_dir: "/tmp".into(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
@@ -160,7 +170,7 @@ mod tests {
             azure_api_version: None,
             openai_api_key: None,
             openai_org_id: None,
-            output_dir: "./out".into(),
+            output_dir: "/tmp".into(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
@@ -180,7 +190,7 @@ mod tests {
             azure_api_version: None,
             openai_api_key: None,
             openai_org_id: None,
-            output_dir: "./out".into(),
+            output_dir: "/tmp".into(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
@@ -200,7 +210,7 @@ mod tests {
             azure_api_version: None,
             openai_api_key: None,
             openai_org_id: None,
-            output_dir: "./out".into(),
+            output_dir: "/tmp".into(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
@@ -220,7 +230,7 @@ mod tests {
             azure_api_version: Some("2024-06-01".into()),
             openai_api_key: None,
             openai_org_id: None,
-            output_dir: "./out".into(),
+            output_dir: std::env::temp_dir().join("imagen-config-test-azure").to_string_lossy().to_string(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
@@ -237,10 +247,31 @@ mod tests {
             azure_api_version: None,
             openai_api_key: Some("sk-key-123".into()),
             openai_org_id: Some("org-123".into()),
-            output_dir: "./out".into(),
+            output_dir: std::env::temp_dir().join("imagen-config-test-openai").to_string_lossy().to_string(),
             max_concurrent_jobs: 4,
             default_model: "gpt-image-2".into(),
         };
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_bad_output_dir_fails() {
+        let config = AppConfig {
+            provider: Provider::OpenAI,
+            azure_endpoint: None,
+            azure_deployment_name: None,
+            azure_api_key: None,
+            azure_api_version: None,
+            openai_api_key: Some("sk-key-123".into()),
+            openai_org_id: None,
+            // /root is not writable by normal users
+            output_dir: "/root/imagen-test-should-fail".into(),
+            max_concurrent_jobs: 4,
+            default_model: "gpt-image-2".into(),
+        };
+        // This test is meaningful only when not running as root.
+        if std::env::var("USER").unwrap_or_default() != "root" {
+            assert!(config.validate().is_err());
+        }
     }
 }

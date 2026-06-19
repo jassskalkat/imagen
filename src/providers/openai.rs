@@ -33,7 +33,7 @@ impl OpenAIProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
-                .unwrap(),
+                .expect("failed to build reqwest client"),
             api_key,
             org_id: config.openai_org_id.clone(),
             default_model: config.default_model.clone(),

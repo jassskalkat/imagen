@@ -1,10 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::{info, instrument, warn};
 
 use crate::cost;
 use crate::jobs::JobKind;
 use crate::runtime::state::AppState;
-use crate::sandbox::validate_output_path;
 use crate::tools::parse::{
     parse_background, parse_compression, parse_format, parse_moderation, parse_quality, parse_size,
     parse_style,
@@ -44,10 +44,17 @@ pub struct GenerateImageOutput {
     pub cost_estimate: cost::CostEstimate,
 }
 
+/// Maximum prompt length in bytes accepted by the server.
+const MAX_PROMPT_LEN: usize = 4000;
+
 /// Execute the generate_image tool logic.
+#[instrument(skip(state), fields(prompt_len = input.prompt.len(), n = input.n.unwrap_or(1)))]
 pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, String> {
     if input.prompt.trim().is_empty() {
         return Err("Prompt cannot be empty.".to_string());
+    }
+    if input.prompt.len() > MAX_PROMPT_LEN {
+        return Err(format!("Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."));
     }
 
     let size = match &input.size {
@@ -86,16 +93,14 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
 
-    // Create job in registry and immediately mark as Running to prevent
-    // the background worker from picking it up (avoids double-execution race).
+    // Create job directly in Running state so the background worker never sees
+    // a Queued entry for this inline-processed job (eliminates TOCTOU race).
     let job_id = state
         .job_registry
-        .create_job(JobKind::Generate, provider_name, &model, &input.prompt)
+        .create_job_running(JobKind::Generate, provider_name, &model, &input.prompt)
         .await;
-    let _ = state
-        .job_registry
-        .update_status(&job_id, crate::jobs::JobStatus::Running)
-        .await;
+
+    info!(job_id = %job_id, model = %model, "generate_image job started");
 
     // For gpt-image-2, style is not supported - suppress it
     let effective_style = if model.contains("gpt-image") {
@@ -123,45 +128,33 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
     let result = state.provider.generate(&request).await;
     let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
 
+    let fmt = request.format.clone().unwrap_or_default();
     let status = match result {
         Ok(response) => {
-            // Save artifacts and complete job
-            let mut results = Vec::new();
-            for (i, img) in response.images.iter().enumerate() {
-                let bytes = base64::Engine::decode(
-                    &base64::engine::general_purpose::STANDARD,
-                    &img.b64_json,
-                )
-                .map_err(|e| format!("Failed to decode image data: {e}"))?;
-
-                let fmt = request.format.clone().unwrap_or_default();
-                let path = crate::artifacts::artifact_path(
-                    &state.config.output_dir,
-                    &job_id,
-                    i as u32,
-                    &fmt,
-                );
-
-                // Validate output path is within the configured output directory
-                validate_output_path(&path, &state.config.output_dir)
-                    .map_err(|e| format!("Output path validation failed: {e}"))?;
-
-                crate::artifacts::save_artifact(&path, &bytes, &state.config.output_dir)
-                    .await
-                    .map_err(|e| format!("Failed to save artifact: {e}"))?;
-
-                results.push(crate::types::ImageResult {
-                    file_path: path.to_string_lossy().to_string(),
-                    format: fmt,
-                    size_bytes: bytes.len() as u64,
-                    revised_prompt: img.revised_prompt.clone(),
-                });
+            match crate::artifacts::save_provider_response(
+                &state.config.output_dir,
+                &job_id,
+                &response,
+                &fmt,
+            )
+            .await
+            {
+                Ok(results) => {
+                    info!(job_id = %job_id, count = results.len(), "generate_image job completed");
+                    let _ = state.job_registry.complete_job(&job_id, results).await;
+                    "submitted".to_string()
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    warn!(job_id = %job_id, error = %msg, "generate_image artifact save failed");
+                    let _ = state.job_registry.fail_job(&job_id, msg.clone()).await;
+                    format!("failed: {msg}")
+                }
             }
-            let _ = state.job_registry.complete_job(&job_id, results).await;
-            "submitted".to_string()
         }
         Err(e) => {
             let error_msg = e.to_string();
+            warn!(job_id = %job_id, error = %error_msg, "generate_image provider call failed");
             let _ = state
                 .job_registry
                 .fail_job(&job_id, error_msg.clone())
@@ -182,59 +175,14 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, Provider};
-    use crate::error::Result;
-    use crate::providers::{ImageProvider, ModelInfo};
-    use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse};
-    use async_trait::async_trait;
+    use crate::test_utils::{mock_state, FailingMockProvider};
+    use crate::config::AppConfig;
+    use crate::config::Provider;
+    use crate::runtime::state::AppState;
     use std::sync::Arc;
 
-    struct MockProvider;
-
-    #[async_trait]
-    impl ImageProvider for MockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![ImageData {
-                    b64_json: "dGVzdA==".to_string(),
-                    revised_prompt: Some("revised".to_string()),
-                }],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
-
     fn test_state() -> AppState {
-        let config = AppConfig {
-            provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
-            openai_api_key: Some("sk-test".into()),
-            openai_org_id: None,
-            output_dir: std::env::temp_dir()
-                .join("imagen-gen-test")
-                .to_string_lossy()
-                .to_string(),
-            max_concurrent_jobs: 2,
-            default_model: "gpt-image-2".into(),
-        };
-        AppState::new(config, Arc::new(MockProvider))
+        mock_state("imagen-gen-test")
     }
 
     fn make_input(prompt: &str) -> GenerateImageInput {
@@ -304,30 +252,6 @@ mod tests {
         input.output_compression = Some(101);
         let result = run(&test_state(), input).await;
         assert!(result.unwrap_err().contains("output_compression"));
-    }
-
-    struct FailingMockProvider;
-
-    #[async_trait]
-    impl ImageProvider for FailingMockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Err(crate::error::ImagenError::ProviderError {
-                message: "service unavailable".into(),
-                status_code: Some(503),
-            })
-        }
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Err(crate::error::ImagenError::ProviderError {
-                message: "service unavailable".into(),
-                status_code: Some(503),
-            })
-        }
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
     }
 
     #[tokio::test]

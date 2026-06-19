@@ -48,7 +48,7 @@ impl AzureProvider {
             client: Client::builder()
                 .timeout(Duration::from_secs(120))
                 .build()
-                .unwrap(),
+                .expect("failed to build reqwest client"),
             endpoint,
             deployment,
             api_key,

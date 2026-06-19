@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, instrument};
 
 use crate::jobs::JobStatus;
 use crate::runtime::state::AppState;
@@ -40,6 +41,7 @@ pub struct ArtifactInfo {
 const MAX_INLINE_SIZE: u64 = 512 * 1024;
 
 /// Execute the check_job tool logic.
+#[instrument(skip(state), fields(job_id = %input.job_id))]
 pub async fn run(state: &AppState, input: CheckJobInput) -> Result<String, String> {
     if input.job_id.trim().is_empty() {
         return Err("job_id cannot be empty.".to_string());
@@ -50,6 +52,8 @@ pub async fn run(state: &AppState, input: CheckJobInput) -> Result<String, Strin
         .get_job(&input.job_id)
         .await
         .map_err(|e| e.to_string())?;
+
+    debug!(job_id = %job.id, status = ?job.status, "check_job status lookup");
 
     let status_str = match &job.status {
         JobStatus::Queued => "queued",
@@ -67,7 +71,7 @@ pub async fn run(state: &AppState, input: CheckJobInput) -> Result<String, Strin
     let mut artifacts = Vec::new();
     if job.status == JobStatus::Completed {
         for result in &job.results {
-            let preview = if result.size_bytes <= MAX_INLINE_SIZE {
+            let preview = if !result.file_path.is_empty() && result.size_bytes <= MAX_INLINE_SIZE {
                 match crate::artifacts::read_artifact(std::path::Path::new(&result.file_path)).await
                 {
                     Ok(bytes) => {
@@ -105,61 +109,11 @@ pub async fn run(state: &AppState, input: CheckJobInput) -> Result<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{AppConfig, Provider};
-    use crate::error::Result;
-    use crate::providers::{ImageProvider, ModelInfo};
-    use crate::types::{EditRequest, GenerateRequest, ProviderResponse};
-    use async_trait::async_trait;
-    use std::sync::Arc;
-
-    struct MockProvider;
-
-    #[async_trait]
-    impl ImageProvider for MockProvider {
-        async fn generate(&self, _request: &GenerateRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-
-        async fn edit(&self, _request: &EditRequest) -> Result<ProviderResponse> {
-            Ok(ProviderResponse {
-                images: vec![],
-                model: "mock".to_string(),
-                usage: None,
-            })
-        }
-
-        fn get_models(&self) -> Vec<ModelInfo> {
-            vec![]
-        }
-
-        fn provider_name(&self) -> &'static str {
-            "mock"
-        }
-    }
-
-    fn test_state() -> AppState {
-        let config = AppConfig {
-            provider: Provider::OpenAI,
-            azure_endpoint: None,
-            azure_deployment_name: None,
-            azure_api_key: None,
-            azure_api_version: None,
-            openai_api_key: Some("sk-test".into()),
-            openai_org_id: None,
-            output_dir: "/tmp/imagen-check-test".into(),
-            max_concurrent_jobs: 2,
-            default_model: "gpt-image-2".into(),
-        };
-        AppState::new(config, Arc::new(MockProvider))
-    }
+    use crate::test_utils::mock_state;
 
     #[tokio::test]
     async fn test_empty_job_id_returns_error() {
-        let state = test_state();
+        let state = mock_state("imagen-check-test");
         let input = CheckJobInput {
             job_id: "   ".to_string(),
         };
@@ -170,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_nonexistent_job_id_returns_error() {
-        let state = test_state();
+        let state = mock_state("imagen-check-test");
         let input = CheckJobInput {
             job_id: "nonexistent-job-id-xyz".to_string(),
         };
