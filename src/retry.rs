@@ -18,6 +18,43 @@ fn is_retryable(err: &ImagenError) -> bool {
     err.is_transient()
 }
 
+/// Extract a service-provided retry delay hint, if present.
+fn retry_after_delay(err: &ImagenError) -> Option<Duration> {
+    let message = match err {
+        ImagenError::RateLimit(message) => message.as_str(),
+        ImagenError::ProviderError {
+            message,
+            status_code: Some(429),
+        } => message.as_str(),
+        _ => return None,
+    };
+
+    extract_retry_after_seconds(message).map(Duration::from_secs)
+}
+
+/// Parse "retry after N seconds" style messages emitted by Azure/OpenAI.
+fn extract_retry_after_seconds(message: &str) -> Option<u64> {
+    let lower = message.to_ascii_lowercase();
+    let start = lower.find("retry after")?;
+    let mut digits = String::new();
+    let mut seen_digit = false;
+
+    for ch in message[start + "retry after".len()..].chars() {
+        if ch.is_ascii_digit() {
+            seen_digit = true;
+            digits.push(ch);
+        } else if seen_digit {
+            break;
+        }
+    }
+
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
 /// Execute an async operation with exponential backoff retry.
 ///
 /// Retries up to `MAX_RETRIES` times on transient errors (rate limits and
@@ -40,12 +77,19 @@ where
 
                 let base_ms = BASE_DELAY.as_millis() as u64 * (BACKOFF_FACTOR.pow(attempt) as u64);
                 let jitter_ms = rand::thread_rng().gen_range(0..=100);
-                let delay = Duration::from_millis(base_ms + jitter_ms);
+                let mut delay = Duration::from_millis(base_ms + jitter_ms);
+                let retry_after_hint = retry_after_delay(&err);
+                if let Some(hint) = retry_after_hint {
+                    if hint > delay {
+                        delay = hint;
+                    }
+                }
 
                 warn!(
                     attempt = attempt + 1,
                     max_retries = MAX_RETRIES,
                     delay_ms = delay.as_millis() as u64,
+                    retry_after_ms = retry_after_hint.map(|d| d.as_millis() as u64),
                     error = %err,
                     "Retrying after transient error"
                 );
@@ -181,5 +225,18 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_extract_retry_after_seconds() {
+        assert_eq!(
+            extract_retry_after_seconds("Please retry after 18 seconds."),
+            Some(18)
+        );
+        assert_eq!(
+            extract_retry_after_seconds("Retry after 2 seconds and try again."),
+            Some(2)
+        );
+        assert_eq!(extract_retry_after_seconds("No retry hint here"), None);
     }
 }

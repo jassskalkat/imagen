@@ -120,7 +120,7 @@ impl ImagenServer {
 
 #[tool_handler(
     name = "imagen",
-    version = "0.1.0",
+    version = "0.1.1",
     instructions = "MCP server for AI image generation and editing via Azure OpenAI and OpenAI APIs"
 )]
 impl ServerHandler for ImagenServer {}

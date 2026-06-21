@@ -7,7 +7,9 @@ use tracing::{debug, instrument};
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
 use crate::retry::with_retry;
-use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo};
+use crate::types::{
+    EditRequest, GenerateRequest, ImageData, ImageQuality, ProviderResponse, UsageInfo,
+};
 
 use super::{ImageProvider, ModelInfo};
 
@@ -118,6 +120,15 @@ fn background_str(bg: &crate::types::ImageBackground) -> &'static str {
     }
 }
 
+fn azure_quality_str(quality: &ImageQuality) -> &'static str {
+    match quality {
+        ImageQuality::Low => "low",
+        ImageQuality::Standard | ImageQuality::Medium => "medium",
+        ImageQuality::Hd | ImageQuality::High => "high",
+        ImageQuality::Auto => "auto",
+    }
+}
+
 #[async_trait]
 impl ImageProvider for AzureProvider {
     #[instrument(skip(self, request), fields(provider = "azure"))]
@@ -131,8 +142,8 @@ impl ImageProvider for AzureProvider {
         let quality = request
             .quality
             .as_ref()
-            .map(|q| serde_json::to_value(q).unwrap_or(json!("standard")))
-            .unwrap_or(json!("standard"));
+            .map(|q| json!(azure_quality_str(q)))
+            .unwrap_or(json!("medium"));
         let n = request.n.unwrap_or(1);
 
         let mut body = json!({
