@@ -58,9 +58,18 @@ mod tests {
         let state = AppState::new(config, Arc::new(MockProvider));
         let output = run(&state).await.unwrap();
 
-        assert!(!output.contains("azure-secret-key-12345"), "Output leaked azure_api_key");
-        assert!(!output.contains("sk-openai-secret-key-67890"), "Output leaked openai_api_key");
-        assert!(!output.contains("org-secret-id"), "Output leaked openai_org_id");
+        assert!(
+            !output.contains("azure-secret-key-12345"),
+            "Output leaked azure_api_key"
+        );
+        assert!(
+            !output.contains("sk-openai-secret-key-67890"),
+            "Output leaked openai_api_key"
+        );
+        assert!(
+            !output.contains("org-secret-id"),
+            "Output leaked openai_org_id"
+        );
         assert!(output.contains("gpt-image-2"));
         assert!(output.contains("/tmp/test-output"));
         assert!(output.contains("mock"));

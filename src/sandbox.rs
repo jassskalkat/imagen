@@ -44,8 +44,7 @@ fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
             }
             ancestor = parent.to_path_buf();
             if ancestor.exists() {
-                let mut result = std::fs::canonicalize(&ancestor)
-                    .unwrap_or(ancestor);
+                let mut result = std::fs::canonicalize(&ancestor).unwrap_or(ancestor);
                 for component in tail.into_iter().rev() {
                     result = result.join(component);
                 }

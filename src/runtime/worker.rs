@@ -90,7 +90,10 @@ mod tests {
         token.cancel();
 
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        assert!(result.is_ok(), "Worker should have stopped after cancellation");
+        assert!(
+            result.is_ok(),
+            "Worker should have stopped after cancellation"
+        );
     }
 
     #[tokio::test]
@@ -107,7 +110,11 @@ mod tests {
                 "eviction test",
             )
             .await;
-        state.job_registry.complete_job(&job_id, vec![]).await.unwrap();
+        state
+            .job_registry
+            .complete_job(&job_id, vec![])
+            .await
+            .unwrap();
 
         // Run maintenance directly (not through the worker loop) to keep the test fast.
         let evicted = state.job_registry.evict_terminal_jobs(0).await;

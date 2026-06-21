@@ -139,8 +139,7 @@ impl ImageProvider for AzureProvider {
             "prompt": request.prompt,
             "n": n,
             "size": size,
-            "quality": quality,
-            "response_format": "b64_json"
+            "quality": quality
         });
         if let Some(ref style) = request.style {
             body["style"] = serde_json::to_value(style).unwrap_or(json!("vivid"));
@@ -241,8 +240,7 @@ impl ImageProvider for AzureProvider {
             async move {
                 let mut form = multipart::Form::new()
                     .text("prompt", prompt.clone())
-                    .text("n", n.to_string())
-                    .text("response_format", "b64_json".to_string());
+                    .text("n", n.to_string());
                 if let Some(ref size) = size {
                     form = form.text("size", size.as_str().to_string());
                 }

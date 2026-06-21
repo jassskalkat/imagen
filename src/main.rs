@@ -8,10 +8,11 @@ mod providers;
 mod retry;
 mod runtime;
 mod sandbox;
-mod tools;
-mod types;
+mod setup;
 #[cfg(test)]
 mod test_utils;
+mod tools;
+mod types;
 
 use std::sync::Arc;
 
@@ -30,6 +31,25 @@ use crate::runtime::worker::Worker;
 
 #[tokio::main]
 async fn main() {
+    let arg = std::env::args().nth(1);
+    match arg.as_deref() {
+        Some("setup") => {
+            if let Err(err) = setup::run() {
+                eprintln!("setup failed: {err}");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some("-h") | Some("--help") | Some("help") => {
+            println!("Usage: imagen [setup]");
+            println!();
+            println!("  imagen         Start the MCP server using the local config file");
+            println!("  imagen setup   Create or update the local config file");
+            return;
+        }
+        _ => {}
+    }
+
     // Initialize tracing to stderr (stdout is used for MCP stdio transport)
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -42,10 +62,11 @@ async fn main() {
     info!("imagen MCP server starting...");
 
     // Load configuration
-    let config = match config::AppConfig::from_env() {
+    let config = match config::AppConfig::load() {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::error!("Failed to load configuration: {e}");
+            eprintln!("Hint: run `imagen setup` once to create the local config file.");
             std::process::exit(1);
         }
     };

@@ -50,7 +50,9 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         return Err("Prompt cannot be empty.".to_string());
     }
     if input.prompt.len() > MAX_PROMPT_LEN {
-        return Err(format!("Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."));
+        return Err(format!(
+            "Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."
+        ));
     }
 
     let output_compression = match input.output_compression {
@@ -130,7 +132,10 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
             .await
             {
                 Ok(results) => {
-                    let last = results.last().map(|r| r.file_path.clone()).unwrap_or_else(|| session.last_image_path.clone());
+                    let last = results
+                        .last()
+                        .map(|r| r.file_path.clone())
+                        .unwrap_or_else(|| session.last_image_path.clone());
                     info!(job_id = %job_id, count = results.len(), "continue_edit_session job completed");
                     let _ = state.job_registry.complete_job(&job_id, results).await;
                     last

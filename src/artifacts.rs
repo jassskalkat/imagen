@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use sha2::{Digest, Sha256};
 use tokio::fs;
 
@@ -73,9 +73,9 @@ pub async fn save_provider_response(
     let mut results = Vec::with_capacity(response.images.len());
     for (index, image) in response.images.iter().enumerate() {
         let path = artifact_path(output_dir, job_id, index as u32, format);
-        let bytes = B64.decode(&image.b64_json).map_err(|e| {
-            ImagenError::Internal(format!("Base64 decode error: {e}"))
-        })?;
+        let bytes = B64
+            .decode(&image.b64_json)
+            .map_err(|e| ImagenError::Internal(format!("Base64 decode error: {e}")))?;
         let size_bytes = save_artifact(&path, &bytes, output_dir).await?;
         results.push(ImageResult {
             file_path: path.to_string_lossy().to_string(),

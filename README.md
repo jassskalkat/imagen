@@ -22,12 +22,37 @@ The server exposes 7 tools over MCP stdio transport:
 - Rust 1.70 or later
 - An API key from OpenAI or an Azure OpenAI deployment
 
+## Install
+
+```bash
+cargo install --locked --path .
+```
+
+Then run `imagen setup` once.
+
 ## Configuration
 
-All configuration is via environment variables:
+The recommended public flow is:
+
+1. Run `imagen setup`
+2. Enter the provider and API key
+3. Add the binary to your MCP config
+
+The server stores everything else locally in a config file and loads it automatically.
+Environment variables still work and override the saved config when present.
+OpenAI is a true one-step setup; Azure also asks for the resource name or endpoint,
+and the wizard fills in the standard endpoint/deployment defaults.
+
+### Runtime config file
+
+The setup wizard writes a JSON file to `~/.config/imagen/config.json` by default.
+You can override that path with `IMAGEN_CONFIG_FILE`.
+
+### Environment variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `IMAGEN_CONFIG_FILE` | No | `~/.config/imagen/config.json` | Path to the saved config file |
 | `IMAGEN_PROVIDER` | No | `openai` | Provider to use: `azure` or `openai` |
 | `OPENAI_API_KEY` | Yes (OpenAI) | - | OpenAI API key |
 | `OPENAI_ORG_ID` | No | - | OpenAI organization ID |
@@ -90,6 +115,8 @@ services:
 
 ## MCP Client Configuration
 
+After `imagen setup`, the MCP client only needs the binary command.
+
 ### Claude Desktop
 
 Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
@@ -98,12 +125,7 @@ Add to your Claude Desktop MCP config (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "imagen": {
-      "command": "/path/to/imagen",
-      "env": {
-        "IMAGEN_PROVIDER": "openai",
-        "OPENAI_API_KEY": "sk-your-key-here",
-        "IMAGEN_OUTPUT_DIR": "/path/to/output"
-      }
+      "command": "/path/to/imagen"
     }
   }
 }
@@ -117,12 +139,7 @@ Add to your workspace `.vscode/mcp.json` or user settings:
 {
   "servers": {
     "imagen": {
-      "command": "/path/to/imagen",
-      "env": {
-        "IMAGEN_PROVIDER": "openai",
-        "OPENAI_API_KEY": "sk-your-key-here",
-        "IMAGEN_OUTPUT_DIR": "/path/to/output"
-      }
+      "command": "/path/to/imagen"
     }
   }
 }
@@ -151,14 +168,7 @@ Or using Docker:
 ```json
 {
   "command": "/path/to/imagen",
-  "transport": "stdio",
-  "env": {
-    "IMAGEN_PROVIDER": "azure",
-    "AZURE_OPENAI_ENDPOINT": "https://your-resource.openai.azure.com",
-    "AZURE_OPENAI_DEPLOYMENT": "gpt-image-2",
-    "AZURE_OPENAI_API_KEY": "your-azure-key",
-    "IMAGEN_OUTPUT_DIR": "./output"
-  }
+  "transport": "stdio"
 }
 ```
 

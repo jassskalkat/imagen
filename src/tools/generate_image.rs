@@ -54,7 +54,9 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         return Err("Prompt cannot be empty.".to_string());
     }
     if input.prompt.len() > MAX_PROMPT_LEN {
-        return Err(format!("Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."));
+        return Err(format!(
+            "Prompt exceeds maximum length of {MAX_PROMPT_LEN} characters."
+        ));
     }
 
     let size = match &input.size {
@@ -175,10 +177,10 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{mock_state, FailingMockProvider};
     use crate::config::AppConfig;
     use crate::config::Provider;
     use crate::runtime::state::AppState;
+    use crate::test_utils::{mock_state, FailingMockProvider};
     use std::sync::Arc;
 
     fn test_state() -> AppState {
