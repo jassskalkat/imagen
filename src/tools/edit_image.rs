@@ -91,7 +91,9 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         validate_input_path(path).await.map_err(|e| e.to_string())?;
     }
     if let Some(ref mask) = input.mask_path {
-        validate_input_path(mask).await.map_err(|e| e.to_string())?;
+        crate::sandbox::validate_mask_path(mask)
+            .await
+            .map_err(|e| e.to_string())?;
     }
 
     // Validate all image files exist
@@ -136,13 +138,13 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
 
-    // Create job directly in Running state to eliminate the TOCTOU race.
+    // Create the job in Queued state; a background task will run it.
     let job_id = state
         .job_registry
-        .create_job_running(JobKind::Edit, provider_name, &model, &input.prompt)
+        .create_job(JobKind::Edit, provider_name, &model, &input.prompt)
         .await;
 
-    info!(job_id = %job_id, model = %model, "edit_image job started");
+    info!(job_id = %job_id, model = %model, "edit_image job queued");
 
     // Build edit request
     let request = EditRequest {
@@ -160,13 +162,91 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         user: input.user,
     };
 
-    // Submit to provider
+    // Reserve the session up front (marked in_flight) so the job_id/session_id
+    // pair is returned immediately, but continue_edit_session cannot race on
+    // last_image_path until the background task finishes.
+    let session_id = Uuid::new_v4().to_string();
+    state
+        .begin_edit_session(&session_id, &input.image_path)
+        .await;
+
+    let task_state = state.clone();
+    let task_job_id = job_id.clone();
+    let task_session_id = session_id.clone();
+    let fallback_path = input.image_path.clone();
+    state.job_tasks.spawn(async move {
+        run_edit_job(
+            task_state,
+            task_job_id,
+            task_session_id,
+            request,
+            fallback_path,
+        )
+        .await;
+    });
+
+    let output = EditImageOutput {
+        job_id,
+        session_id: Some(session_id),
+        status: "queued".to_string(),
+    };
+
+    serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
+}
+
+/// Run an edit job in the background: acquire a concurrency permit, call the
+/// provider, save artifacts, update the job and edit session, and record the
+/// final status.
+async fn run_edit_job(
+    state: AppState,
+    job_id: String,
+    session_id: String,
+    request: EditRequest,
+    fallback_image_path: String,
+) {
+    let _permit = match state.job_semaphore.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            let _ = state
+                .job_registry
+                .fail_job(&job_id, "Internal error: job scheduler unavailable".into())
+                .await;
+            state.clear_edit_session_in_flight(&session_id).await;
+            return;
+        }
+    };
+
+    if state
+        .job_registry
+        .update_status(&job_id, crate::jobs::JobStatus::Running)
+        .await
+        .is_err()
+    {
+        state.clear_edit_session_in_flight(&session_id).await;
+        return;
+    }
+
+    // update_status no-ops on a job already in a terminal state (e.g. expired
+    // by the housekeeping worker while queued for a permit). Bail without
+    // calling the provider if that happened.
+    match state.job_registry.get_job(&job_id).await {
+        Ok(job) if job.status != crate::jobs::JobStatus::Running => {
+            warn!(job_id = %job_id, status = ?job.status, "edit_image job expired before it could run");
+            state.clear_edit_session_in_flight(&session_id).await;
+            return;
+        }
+        Err(_) => {
+            state.clear_edit_session_in_flight(&session_id).await;
+            return;
+        }
+        _ => {}
+    }
+
     let result = state.provider.edit(&request).await;
     let fmt = crate::types::OutputFormat::default();
-    let session_id = match result {
+    match result {
         Ok(response) => {
-            let sid = Uuid::new_v4().to_string();
-            let last_path = match crate::artifacts::save_provider_response(
+            match crate::artifacts::save_provider_response(
                 &state.config.output_dir,
                 &job_id,
                 &response,
@@ -178,36 +258,26 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
                     let last = results
                         .last()
                         .map(|r| r.file_path.clone())
-                        .unwrap_or_else(|| input.image_path.clone());
+                        .unwrap_or(fallback_image_path);
                     info!(job_id = %job_id, count = results.len(), "edit_image job completed");
                     let _ = state.job_registry.complete_job(&job_id, results).await;
-                    last
+                    state.upsert_edit_session(&session_id, &last).await;
                 }
                 Err(e) => {
                     warn!(job_id = %job_id, error = %e, "edit_image artifact save failed");
                     let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
-                    input.image_path.clone()
+                    // The edit failed: leave the session pointing at the original
+                    // image and clear in_flight so continue_edit_session works again.
+                    state.clear_edit_session_in_flight(&session_id).await;
                 }
-            };
-            // Only create/update the session when the edit actually produced output.
-            state.upsert_edit_session(&sid, &last_path).await;
-            Some(sid)
+            }
         }
         Err(e) => {
             warn!(job_id = %job_id, error = %e, "edit_image provider call failed");
             let _ = state.job_registry.fail_job(&job_id, e.to_string()).await;
-            // Do NOT create a session — the edit failed and there is no new image.
-            None
+            state.clear_edit_session_in_flight(&session_id).await;
         }
-    };
-
-    let output = EditImageOutput {
-        job_id,
-        session_id,
-        status: "submitted".to_string(),
-    };
-
-    serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
+    }
 }
 
 #[cfg(test)]
@@ -288,5 +358,55 @@ mod tests {
         input.n = Some(11);
         let result = run(&test_state(), input).await;
         assert!(result.unwrap_err().contains("n must be between 1 and 10"));
+    }
+
+    #[tokio::test]
+    async fn test_successful_edit_completes_async_and_updates_session() {
+        let tmp_image = std::env::temp_dir().join("imagen-edit-async-test-img.png");
+        tokio::fs::write(&tmp_image, b"fake image data")
+            .await
+            .unwrap();
+
+        let state = test_state();
+        let input = make_input(&tmp_image.to_string_lossy(), "Edit this");
+        let output = run(&state, input).await.unwrap();
+        assert!(output.contains("\"status\":\"queued\""));
+
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let job_id = parsed["job_id"].as_str().unwrap().to_string();
+        let session_id = parsed["session_id"].as_str().unwrap().to_string();
+
+        // Job should reach Completed asynchronously.
+        let job = wait_for_terminal_job(&state, &job_id).await;
+        assert_eq!(job.status, crate::jobs::JobStatus::Completed);
+
+        // Session should no longer be in_flight and should have a fresh image path.
+        let session = state.get_edit_session(&session_id).await.unwrap();
+        assert!(!session.in_flight);
+        assert_eq!(session.step_count, 1);
+        assert_ne!(session.last_image_path, tmp_image.to_string_lossy());
+
+        let _ = tokio::fs::remove_file(&tmp_image).await;
+    }
+
+    async fn wait_for_terminal_job(state: &AppState, job_id: &str) -> crate::jobs::Job {
+        use crate::jobs::JobStatus;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let job = state.job_registry.get_job(job_id).await.unwrap();
+            if matches!(
+                job.status,
+                JobStatus::Completed | JobStatus::Failed | JobStatus::Expired
+            ) {
+                return job;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "job {job_id} did not reach a terminal state in time (status: {:?})",
+                    job.status
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 }
