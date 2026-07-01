@@ -44,6 +44,15 @@ pub struct Job {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// Returns true if the job status is terminal (will not transition further
+/// through normal execution).
+fn is_terminal(status: &JobStatus) -> bool {
+    matches!(
+        status,
+        JobStatus::Completed | JobStatus::Failed | JobStatus::Expired
+    )
+}
+
 /// In-memory job registry protected by a read-write lock.
 #[derive(Debug, Clone)]
 pub struct JobRegistry {
@@ -60,11 +69,9 @@ impl JobRegistry {
 
     /// Create a new job and return its ID.
     ///
-    /// The job starts in `Queued` state and will be picked up by the background worker.
-    /// For tool handlers that process jobs inline, use [`create_job_running`] instead.
-    ///
-    /// [`create_job_running`]: JobRegistry::create_job_running
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The job starts in `Queued` state. Callers spawn a background task that
+    /// transitions it to `Running` once it acquires a concurrency permit, then
+    /// to `Completed`/`Failed` when the provider call finishes.
     pub async fn create_job(
         &self,
         kind: JobKind,
@@ -96,9 +103,14 @@ impl JobRegistry {
 
     /// Create a new job already in `Running` state and return its ID.
     ///
-    /// Use this from inline tool handlers that process the job themselves so
-    /// the background worker never sees a `Queued` entry and cannot pick it up.
-    /// This eliminates the TOCTOU window between `create_job` + `update_status`.
+    /// Reserved for callers that acquire their concurrency permit before
+    /// creating the job record (so it should never actually be observed in
+    /// `Queued` state). Most tool handlers should use [`create_job`] and
+    /// transition to `Running` via [`update_status`] once a permit is acquired.
+    ///
+    /// [`create_job`]: JobRegistry::create_job
+    /// [`update_status`]: JobRegistry::update_status
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn create_job_running(
         &self,
         kind: JobKind,
@@ -129,12 +141,19 @@ impl JobRegistry {
     }
 
     /// Update a job's status.
-    #[cfg_attr(not(test), allow(dead_code))]
+    ///
+    /// No-ops (returns `Ok`) if the job has already reached a terminal state —
+    /// this happens when a background task tries to transition an expired job
+    /// to `Running` after the housekeeping worker has already expired it.
     pub async fn update_status(&self, job_id: &str, status: JobStatus) -> Result<()> {
         let mut jobs = self.jobs.write().await;
         let job = jobs
             .get_mut(job_id)
             .ok_or_else(|| ImagenError::JobNotFound(job_id.to_string()))?;
+
+        if is_terminal(&job.status) {
+            return Ok(());
+        }
 
         job.status = status.clone();
         job.updated_at = Utc::now();
@@ -147,11 +166,20 @@ impl JobRegistry {
     }
 
     /// Mark a job as completed with results.
+    ///
+    /// No-ops if the job has already reached a terminal state (e.g. it was
+    /// expired by the housekeeping worker while a background task was still
+    /// running the provider call). This prevents a stale task from silently
+    /// resurrecting an `Expired`/`Failed` job back to `Completed`.
     pub async fn complete_job(&self, job_id: &str, results: Vec<ImageResult>) -> Result<()> {
         let mut jobs = self.jobs.write().await;
         let job = jobs
             .get_mut(job_id)
             .ok_or_else(|| ImagenError::JobNotFound(job_id.to_string()))?;
+
+        if is_terminal(&job.status) {
+            return Ok(());
+        }
 
         job.status = JobStatus::Completed;
         job.results = results;
@@ -161,11 +189,20 @@ impl JobRegistry {
     }
 
     /// Mark a job as failed with an error message.
+    ///
+    /// No-ops if the job has already reached a terminal state, for the same
+    /// reason as [`complete_job`].
+    ///
+    /// [`complete_job`]: JobRegistry::complete_job
     pub async fn fail_job(&self, job_id: &str, error: String) -> Result<()> {
         let mut jobs = self.jobs.write().await;
         let job = jobs
             .get_mut(job_id)
             .ok_or_else(|| ImagenError::JobNotFound(job_id.to_string()))?;
+
+        if is_terminal(&job.status) {
+            return Ok(());
+        }
 
         job.status = JobStatus::Failed;
         job.error = Some(error);
@@ -438,5 +475,76 @@ mod tests {
             registry.get_job(&id).await.unwrap().status,
             JobStatus::Running
         );
+    }
+
+    #[tokio::test]
+    async fn test_complete_job_does_not_resurrect_expired_job() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .create_job(JobKind::Generate, "openai", "gpt-image-2", "Slow job")
+            .await;
+        // Simulate the housekeeping worker expiring the job while a background
+        // task is still mid-flight on the provider call.
+        let expired = registry.expire_stale_jobs(0).await;
+        assert!(expired.contains(&id));
+
+        // The background task finishes afterwards and tries to complete it —
+        // this must not overwrite the Expired status.
+        registry.complete_job(&id, vec![]).await.unwrap();
+        let job = registry.get_job(&id).await.unwrap();
+        assert_eq!(job.status, JobStatus::Expired);
+        assert!(job.results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fail_job_does_not_resurrect_expired_job() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .create_job(JobKind::Generate, "openai", "gpt-image-2", "Slow job")
+            .await;
+        let expired = registry.expire_stale_jobs(0).await;
+        assert!(expired.contains(&id));
+
+        registry
+            .fail_job(&id, "provider error after expiry".into())
+            .await
+            .unwrap();
+        let job = registry.get_job(&id).await.unwrap();
+        assert_eq!(job.status, JobStatus::Expired);
+        assert!(job.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_status_does_not_resurrect_expired_job() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .create_job(JobKind::Generate, "openai", "gpt-image-2", "Slow job")
+            .await;
+        let expired = registry.expire_stale_jobs(0).await;
+        assert!(expired.contains(&id));
+
+        // A background task that acquired its permit late tries to mark the
+        // job Running — this must be a no-op, not a resurrection.
+        registry
+            .update_status(&id, JobStatus::Running)
+            .await
+            .unwrap();
+        let job = registry.get_job(&id).await.unwrap();
+        assert_eq!(job.status, JobStatus::Expired);
+    }
+
+    #[tokio::test]
+    async fn test_complete_job_does_not_overwrite_already_failed_job() {
+        let registry = JobRegistry::new();
+        let id = registry
+            .create_job(JobKind::Generate, "openai", "gpt-image-2", "Racy job")
+            .await;
+        registry.fail_job(&id, "first error".into()).await.unwrap();
+
+        // A second, stale completion attempt must not clobber the failure.
+        registry.complete_job(&id, vec![]).await.unwrap();
+        let job = registry.get_job(&id).await.unwrap();
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.error, Some("first error".into()));
     }
 }
