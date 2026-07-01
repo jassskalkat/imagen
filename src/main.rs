@@ -106,6 +106,10 @@ async fn main() {
     let worker = Worker::new(state.clone(), cancel_token.clone());
     let worker_handle = worker.spawn();
 
+    // Keep a handle to shared state so we can wait for in-flight job tasks
+    // during shutdown, even after `state` is moved into the server below.
+    let shutdown_state = state.clone();
+
     // Create and start the MCP server on stdio transport
     let server = ImagenServer::new(state);
     let transport = rmcp::transport::io::stdio();
@@ -136,6 +140,22 @@ async fn main() {
     // Signal the worker to stop and wait for it to finish
     cancel_token.cancel();
     let _ = worker_handle.await;
+
+    // Give in-flight background job tasks (generate/edit/continue_edit_session)
+    // a bounded window to finish rather than letting the runtime silently drop
+    // them mid-provider-call. Jobs that don't finish in time are abandoned —
+    // their job records remain in memory but will never reach a terminal state
+    // via this task; the housekeeping worker no longer runs to expire them
+    // since we've already stopped it, but the process is exiting anyway.
+    shutdown_state.job_tasks.close();
+    const SHUTDOWN_JOB_WAIT: std::time::Duration = std::time::Duration::from_secs(25);
+    match tokio::time::timeout(SHUTDOWN_JOB_WAIT, shutdown_state.job_tasks.wait()).await {
+        Ok(()) => info!("All in-flight jobs finished before shutdown"),
+        Err(_) => {
+            tracing::warn!("Shutdown timeout reached with jobs still in flight; abandoning them");
+        }
+    }
+
     info!("imagen MCP server stopped.");
 }
 

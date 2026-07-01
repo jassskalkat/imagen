@@ -189,7 +189,9 @@ Request the `generate_image` tool with a prompt:
 }
 ```
 
-The server returns a job ID and cost estimate. Use `check_job` to retrieve results.
+The server returns a job ID and cost estimate immediately (`status: "queued"`). The
+generation runs in the background — poll `check_job` until the status is `completed`
+or `failed`.
 
 ### Edit an Image
 
@@ -198,11 +200,17 @@ Use `edit_image` to modify an existing image:
 ```json
 {
   "prompt": "Add a wooden dock extending into the lake",
-  "image_paths": ["/path/to/lake-image.png"],
+  "image_path": "/path/to/lake-image.png",
   "size": "1024x1024",
   "quality": "standard"
 }
 ```
+
+Returns a `job_id` and a `session_id` immediately (`status: "queued"`). Poll `check_job` for
+the result. Once the job completes, use `session_id` with `continue_edit_session` for
+multi-turn edits. The session is marked in-flight as soon as the edit is queued; calling
+`continue_edit_session` while the session's previous edit is still in-flight returns an
+error telling you to wait for it to complete before continuing.
 
 ### Check Job Status
 
@@ -214,7 +222,8 @@ Poll for results with `check_job`:
 }
 ```
 
-Returns the job status, and when completed, artifact file paths and optional base64 previews.
+Status is one of `queued`, `running`, `completed`, `failed`, or `expired`. Returns artifact
+file paths and optional base64 previews once the job reaches `completed`.
 
 ## Security
 
@@ -287,7 +296,8 @@ RUST_LOG=debug cargo run
   transport is planned but not yet implemented.
 - **In-memory job storage**: Job state is stored in memory and is lost when the server
   process exits. There is no persistence across restarts.
-- **Maximum 4 concurrent jobs (default)**: The default concurrency limit is 4. This can be
+- **Maximum 4 concurrent jobs (default)**: The default concurrency limit is 4, enforced by a
+  semaphore that background job tasks must acquire before calling the provider. This can be
   increased via `IMAGEN_MAX_CONCURRENT_JOBS`, but higher values increase memory usage.
 - **No built-in authentication**: The server relies on the calling process for access control.
   Do not expose the server process directly to untrusted networks.

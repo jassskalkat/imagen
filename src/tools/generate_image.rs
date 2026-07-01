@@ -95,14 +95,15 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
 
-    // Create job directly in Running state so the background worker never sees
-    // a Queued entry for this inline-processed job (eliminates TOCTOU race).
+    // Create the job in Queued state. A background task will acquire a
+    // concurrency permit, transition it to Running, call the provider, and
+    // record the final result. This call returns immediately.
     let job_id = state
         .job_registry
-        .create_job_running(JobKind::Generate, provider_name, &model, &input.prompt)
+        .create_job(JobKind::Generate, provider_name, &model, &input.prompt)
         .await;
 
-    info!(job_id = %job_id, model = %model, "generate_image job started");
+    info!(job_id = %job_id, model = %model, "generate_image job queued");
 
     // For gpt-image-2, style is not supported - suppress it
     let effective_style = if model.contains("gpt-image") {
@@ -111,13 +112,15 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         Some(style)
     };
 
+    let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
+
     // Build the provider request
     let request = GenerateRequest {
         prompt: input.prompt,
         model: Some(model.clone()),
-        size: Some(size.clone()),
-        quality: Some(quality.clone()),
-        format: Some(format),
+        size: Some(size),
+        quality: Some(quality),
+        format: Some(format.clone()),
         style: effective_style,
         n: Some(n),
         output_compression,
@@ -126,52 +129,92 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         user: input.user,
     };
 
-    // Submit to provider (synchronous for now, worker can pick up later)
-    let result = state.provider.generate(&request).await;
-    let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
+    let task_state = state.clone();
+    let task_job_id = job_id.clone();
+    state.job_tasks.spawn(async move {
+        run_generate_job(task_state, task_job_id, request, format).await;
+    });
 
-    let fmt = request.format.clone().unwrap_or_default();
-    let status = match result {
+    let output = GenerateImageOutput {
+        job_id,
+        status: "queued".to_string(),
+        cost_estimate: estimate,
+    };
+
+    serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
+}
+
+/// Run a generate job in the background: acquire a concurrency permit, call
+/// the provider, save artifacts, and record the final status on the job.
+async fn run_generate_job(
+    state: AppState,
+    job_id: String,
+    request: GenerateRequest,
+    format: OutputFormat,
+) {
+    let _permit = match state.job_semaphore.clone().acquire_owned().await {
+        Ok(permit) => permit,
+        Err(_) => {
+            // Semaphore closed (should not happen; it is never explicitly closed).
+            let _ = state
+                .job_registry
+                .fail_job(&job_id, "Internal error: job scheduler unavailable".into())
+                .await;
+            return;
+        }
+    };
+
+    if state
+        .job_registry
+        .update_status(&job_id, crate::jobs::JobStatus::Running)
+        .await
+        .is_err()
+    {
+        // Job vanished entirely (e.g. evicted); nothing to update.
+        return;
+    }
+
+    // update_status no-ops on a job that already reached a terminal state
+    // (e.g. expired by the housekeeping worker while queued for a permit).
+    // Re-check the actual status so we don't waste a provider call on a
+    // job the client has already given up on.
+    match state.job_registry.get_job(&job_id).await {
+        Ok(job) if job.status != crate::jobs::JobStatus::Running => {
+            warn!(job_id = %job_id, status = ?job.status, "generate_image job expired before it could run");
+            return;
+        }
+        Err(_) => return,
+        _ => {}
+    }
+
+    let result = state.provider.generate(&request).await;
+    match result {
         Ok(response) => {
             match crate::artifacts::save_provider_response(
                 &state.config.output_dir,
                 &job_id,
                 &response,
-                &fmt,
+                &format,
             )
             .await
             {
                 Ok(results) => {
                     info!(job_id = %job_id, count = results.len(), "generate_image job completed");
                     let _ = state.job_registry.complete_job(&job_id, results).await;
-                    "submitted".to_string()
                 }
                 Err(e) => {
                     let msg = e.to_string();
                     warn!(job_id = %job_id, error = %msg, "generate_image artifact save failed");
-                    let _ = state.job_registry.fail_job(&job_id, msg.clone()).await;
-                    format!("failed: {msg}")
+                    let _ = state.job_registry.fail_job(&job_id, msg).await;
                 }
             }
         }
         Err(e) => {
             let error_msg = e.to_string();
             warn!(job_id = %job_id, error = %error_msg, "generate_image provider call failed");
-            let _ = state
-                .job_registry
-                .fail_job(&job_id, error_msg.clone())
-                .await;
-            format!("failed: {error_msg}")
+            let _ = state.job_registry.fail_job(&job_id, error_msg).await;
         }
-    };
-
-    let output = GenerateImageOutput {
-        job_id,
-        status,
-        cost_estimate: estimate,
-    };
-
-    serde_json::to_string(&output).map_err(|e| format!("Serialization error: {e}"))
+    }
 }
 
 #[cfg(test)]
@@ -275,11 +318,76 @@ mod tests {
         };
         let state = AppState::new(config, Arc::new(FailingMockProvider));
         let result = run(&state, make_input("A cat")).await;
-        assert!(result.is_ok(), "Should return Ok with failed status");
+        assert!(result.is_ok(), "Should return Ok with queued status");
         let output = result.unwrap();
         assert!(
-            output.contains("\"status\":\"failed:"),
-            "Status should indicate failure, got: {output}"
+            output.contains("\"status\":\"queued\""),
+            "Status should be queued immediately, got: {output}"
+        );
+
+        let job_id: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let job_id = job_id["job_id"].as_str().unwrap().to_string();
+
+        // The background task runs asynchronously; poll briefly for the
+        // terminal Failed status instead of asserting immediately.
+        let job = wait_for_terminal_job(&state, &job_id).await;
+        assert_eq!(job.status, crate::jobs::JobStatus::Failed);
+        assert!(job.error.is_some());
+    }
+
+    /// Poll the job registry until the job reaches a terminal state or a
+    /// timeout elapses. Used because job execution is now a spawned task.
+    async fn wait_for_terminal_job(state: &AppState, job_id: &str) -> crate::jobs::Job {
+        use crate::jobs::JobStatus;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let job = state.job_registry.get_job(job_id).await.unwrap();
+            if matches!(
+                job.status,
+                JobStatus::Completed | JobStatus::Failed | JobStatus::Expired
+            ) {
+                return job;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "job {job_id} did not reach a terminal state in time (status: {:?})",
+                    job.status
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_generate_job_expired_before_running_stays_expired() {
+        // Use a semaphore with zero available permits by holding the only one,
+        // so the background task cannot proceed to Running before the job is
+        // expired out from under it.
+        let state = test_state();
+        let _permit = state.job_semaphore.clone().acquire_owned().await.unwrap();
+
+        let output = run(&state, make_input("A cat")).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let job_id = parsed["job_id"].as_str().unwrap().to_string();
+
+        // The background task is blocked waiting for a permit. Expire the job
+        // out from under it, simulating the housekeeping worker.
+        let expired = state.job_registry.expire_stale_jobs(0).await;
+        assert!(expired.contains(&job_id));
+
+        // Release the permit so the background task can proceed and observe
+        // the job is no longer Running-eligible.
+        drop(_permit);
+
+        // Give the background task a moment to wake up, acquire the permit,
+        // and discover the job is already terminal.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let job = state.job_registry.get_job(&job_id).await.unwrap();
+        assert_eq!(
+            job.status,
+            crate::jobs::JobStatus::Expired,
+            "job must remain Expired, not be resurrected to Completed/Failed"
         );
     }
 }

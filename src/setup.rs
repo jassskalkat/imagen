@@ -20,11 +20,13 @@ pub fn run() -> Result<(), String> {
     }
 
     let provider = prompt_provider()?;
-    let mut config = ConfigFile::default();
-    config.provider = Some(provider.clone());
-    config.output_dir = Some(default_output_dir());
-    config.max_concurrent_jobs = Some(4);
-    config.default_model = Some("gpt-image-2".to_string());
+    let mut config = ConfigFile {
+        provider: Some(provider.clone()),
+        output_dir: Some(default_output_dir()),
+        max_concurrent_jobs: Some(4),
+        default_model: Some("gpt-image-2".to_string()),
+        ..Default::default()
+    };
 
     match provider {
         Provider::OpenAI => {

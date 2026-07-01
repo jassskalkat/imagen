@@ -2,8 +2,9 @@ use crate::error::ImagenError;
 use crate::types::{ImageBackground, ImageQuality, ImageSize, ImageStyle, OutputFormat};
 
 /// Parse a size string into an ImageSize enum.
-/// Accepts standard sizes, "auto", or arbitrary "WxH" where both dimensions
-/// are divisible by 16, aspect ratio is between 1:3 and 3:1, and max 3840x2160.
+/// Accepts standard sizes, "auto", or arbitrary "WxH" per gpt-image-2's documented
+/// constraints: both dimensions divisible by 16, max edge length 3840px, aspect
+/// ratio between 1:3 and 3:1, and total pixel count between 655,360 and 8,294,400.
 pub fn parse_size(s: &str) -> Result<ImageSize, ImagenError> {
     match s {
         "1024x1024" => Ok(ImageSize::Square),
@@ -13,6 +14,12 @@ pub fn parse_size(s: &str) -> Result<ImageSize, ImagenError> {
         other => parse_custom_size(other),
     }
 }
+
+/// Minimum total pixel count accepted for a custom size, per gpt-image-2's
+/// documented constraints (official OpenAI/Azure docs: 655,360–8,294,400 px).
+const MIN_CUSTOM_SIZE_PIXELS: u64 = 655_360;
+/// Maximum total pixel count accepted for a custom size (see above).
+const MAX_CUSTOM_SIZE_PIXELS: u64 = 8_294_400;
 
 /// Validate and parse an arbitrary WxH size string.
 fn parse_custom_size(s: &str) -> Result<ImageSize, ImagenError> {
@@ -40,9 +47,11 @@ fn parse_custom_size(s: &str) -> Result<ImageSize, ImagenError> {
             "Invalid size: '{s}'. Both dimensions must be divisible by 16."
         )));
     }
-    if width > 3840 || height > 2160 {
+    // Max edge length applies to whichever dimension is longer (e.g. 2160x3840
+    // portrait is valid, per official docs, even though height > width here).
+    if width.max(height) > 3840 {
         return Err(ImagenError::InvalidInput(format!(
-            "Invalid size: '{s}'. Maximum resolution is 3840x2160."
+            "Invalid size: '{s}'. Maximum edge length is 3840px."
         )));
     }
 
@@ -51,6 +60,22 @@ fn parse_custom_size(s: &str) -> Result<ImageSize, ImagenError> {
     if !(1.0 / 3.0..=3.0).contains(&ratio) {
         return Err(ImagenError::InvalidInput(format!(
             "Invalid size: '{s}'. Aspect ratio must be between 1:3 and 3:1."
+        )));
+    }
+
+    // Total pixel count must fall within gpt-image-2's documented range.
+    // Without this check, a size like 512x512 passes every other rule above
+    // but is rejected by the provider with a 400 error at request time.
+    let pixels = width as u64 * height as u64;
+    if pixels < MIN_CUSTOM_SIZE_PIXELS {
+        return Err(ImagenError::InvalidInput(format!(
+            "Invalid size: '{s}'. Total pixel count ({pixels}) is below the minimum of {MIN_CUSTOM_SIZE_PIXELS} ({} total pixels required, e.g. 1024x640 or larger).",
+            MIN_CUSTOM_SIZE_PIXELS
+        )));
+    }
+    if pixels > MAX_CUSTOM_SIZE_PIXELS {
+        return Err(ImagenError::InvalidInput(format!(
+            "Invalid size: '{s}'. Total pixel count ({pixels}) exceeds the maximum of {MAX_CUSTOM_SIZE_PIXELS}."
         )));
     }
 
@@ -148,14 +173,54 @@ mod tests {
             parse_size("3840x2160").unwrap(),
             ImageSize::Custom("3840x2160".to_string())
         );
+        // 2160x3840: portrait 4K, height exceeds the old (buggy) asymmetric
+        // height<=2160 cap but is valid per the documented max-edge-length rule.
         assert_eq!(
-            parse_size("512x512").unwrap(),
-            ImageSize::Custom("512x512".to_string())
+            parse_size("2160x3840").unwrap(),
+            ImageSize::Custom("2160x3840".to_string())
         );
         assert_eq!(
             parse_size("1280x720").unwrap(),
             ImageSize::Custom("1280x720".to_string())
         );
+    }
+
+    #[test]
+    fn test_parse_size_custom_below_pixel_minimum_rejected() {
+        // 512x512 = 262,144 px, below the documented 655,360 minimum.
+        let result = parse_size("512x512");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("below the minimum"));
+    }
+
+    #[test]
+    fn test_parse_size_custom_at_pixel_minimum_accepted() {
+        // 1024x640 = 655,360 px, exactly at the documented minimum.
+        let result = parse_size("1024x640");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_size_custom_above_pixel_maximum_rejected() {
+        // Max edge 3840, but pick a ratio-valid combination that still
+        // exceeds the 8,294,400 pixel ceiling while respecting max edge and
+        // aspect ratio: 3840x2176 = 8,355,840 px (ratio ~1.77, within 3:1).
+        let result = parse_size("3840x2176");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds the maximum"));
+    }
+
+    #[test]
+    fn test_parse_size_custom_at_pixel_maximum_accepted() {
+        // 3840x2160 = 8,294,400 px, exactly at the documented maximum.
+        let result = parse_size("3840x2160");
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -172,7 +237,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("Maximum resolution"));
+            .contains("Maximum edge length"));
     }
 
     #[test]

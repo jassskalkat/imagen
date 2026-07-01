@@ -6,10 +6,12 @@ use crate::runtime::state::AppState;
 
 /// Background worker that runs periodic maintenance on the job registry and edit sessions.
 ///
-/// All tool handlers (generate_image, edit_image, continue_edit_session) create jobs
-/// directly in `Running` state via `create_job_running`, so no job ever enters `Queued`
-/// state during normal operation. The worker's sole responsibility is housekeeping:
-/// evicting old terminal jobs, expiring stale ones, and cleaning up edit sessions.
+/// Tool handlers (`generate_image`, `edit_image`, `continue_edit_session`) create jobs in
+/// `Queued` state and spawn a background task that acquires a concurrency permit,
+/// transitions the job to `Running`, calls the provider, and records the final result.
+/// The worker's job here is housekeeping only: evicting old terminal jobs, expiring jobs
+/// that have been stuck for too long, and cleaning up idle edit sessions. It never runs
+/// job work itself.
 pub struct Worker {
     state: AppState,
     poll_interval: Duration,
@@ -101,6 +103,10 @@ mod tests {
         let state = mock_state("imagen-worker-test");
 
         // Create a completed job — the worker should eventually evict it.
+        // Using `create_job_running` here is a deliberate test-only shortcut to
+        // skip straight to `Running` before marking it complete; it is not
+        // exercising the production job creation path, which is `create_job`
+        // (starts `Queued`) followed by `update_status` once a permit is acquired.
         let job_id = state
             .job_registry
             .create_job_running(

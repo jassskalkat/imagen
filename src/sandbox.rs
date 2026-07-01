@@ -56,12 +56,20 @@ fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
     }
 }
 
+/// Maximum size (in bytes) accepted for an input image or mask file.
+/// Providers read the entire file into memory (and clone it into a multipart
+/// body on each retry attempt), so this bounds worst-case memory use per
+/// concurrent job. 25 MiB is generous for any image format while blocking
+/// pathological or accidental huge-file inputs.
+pub const MAX_INPUT_FILE_SIZE: u64 = 25 * 1024 * 1024;
+
 /// Validate that an input file path is safe to read.
 ///
 /// Checks:
 /// - No null bytes in the path string
 /// - Path does not contain `..` traversal components
 /// - Path exists and is a regular file
+/// - File size does not exceed [`MAX_INPUT_FILE_SIZE`]
 pub async fn validate_input_path(path: &str) -> Result<()> {
     // Reject null bytes
     if path.contains('\0') {
@@ -88,6 +96,44 @@ pub async fn validate_input_path(path: &str) -> Result<()> {
     if !metadata.is_file() {
         return Err(ImagenError::InvalidInput(format!(
             "Path is not a regular file: '{path}'"
+        )));
+    }
+
+    if metadata.len() > MAX_INPUT_FILE_SIZE {
+        return Err(ImagenError::InvalidInput(format!(
+            "File '{path}' is {} bytes, which exceeds the maximum allowed size of {} bytes ({} MiB)",
+            metadata.len(),
+            MAX_INPUT_FILE_SIZE,
+            MAX_INPUT_FILE_SIZE / (1024 * 1024)
+        )));
+    }
+
+    Ok(())
+}
+
+/// Maximum size (in bytes) accepted for a mask file. The OpenAI/Azure image
+/// edit APIs require masks to be a valid PNG under 4 MiB, stricter than the
+/// general input image limit.
+pub const MAX_MASK_FILE_SIZE: u64 = 4 * 1024 * 1024;
+
+/// Validate a mask file the same way as [`validate_input_path`], but against
+/// the stricter [`MAX_MASK_FILE_SIZE`] limit documented for mask uploads.
+pub async fn validate_mask_path(path: &str) -> Result<()> {
+    validate_input_path(path).await?;
+
+    // validate_input_path already confirmed the file exists and is a regular
+    // file, so this metadata call cannot fail for reasons other than a race
+    // with something deleting the file between the two calls.
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(|_| ImagenError::InvalidInput(format!("Path does not exist: '{path}'")))?;
+
+    if metadata.len() > MAX_MASK_FILE_SIZE {
+        return Err(ImagenError::InvalidInput(format!(
+            "Mask file '{path}' is {} bytes, which exceeds the maximum allowed mask size of {} bytes ({} MiB)",
+            metadata.len(),
+            MAX_MASK_FILE_SIZE,
+            MAX_MASK_FILE_SIZE / (1024 * 1024)
         )));
     }
 
@@ -145,6 +191,108 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not a regular file"), "Error was: {err}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_input_path_oversized_file_rejected() {
+        let dir = std::env::temp_dir().join("sandbox-test-oversized");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("huge.png");
+
+        // Write a sparse file just over the limit without actually allocating
+        // MAX_INPUT_FILE_SIZE bytes of disk/memory for the test.
+        let file = fs::File::create(&file_path).unwrap();
+        file.set_len(MAX_INPUT_FILE_SIZE + 1).unwrap();
+
+        let result = validate_input_path(file_path.to_str().unwrap()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds the maximum allowed size"),
+            "Error was: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_input_path_at_size_limit_accepted() {
+        let dir = std::env::temp_dir().join("sandbox-test-at-limit");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("at_limit.png");
+
+        let file = fs::File::create(&file_path).unwrap();
+        file.set_len(MAX_INPUT_FILE_SIZE).unwrap();
+
+        let result = validate_input_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_ok(),
+            "File exactly at the limit should be accepted"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_mask_path_oversized_rejected() {
+        let dir = std::env::temp_dir().join("sandbox-test-mask-oversized");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("mask.png");
+
+        // Just over the mask-specific 4 MiB limit, but well under the general
+        // 25 MiB input file limit, to prove the mask check is actually stricter.
+        let file = fs::File::create(&file_path).unwrap();
+        file.set_len(MAX_MASK_FILE_SIZE + 1).unwrap();
+
+        let result = validate_mask_path(file_path.to_str().unwrap()).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("exceeds the maximum allowed mask size"),
+            "Error was: {err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_mask_path_at_limit_accepted() {
+        let dir = std::env::temp_dir().join("sandbox-test-mask-at-limit");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("mask.png");
+
+        let file = fs::File::create(&file_path).unwrap();
+        file.set_len(MAX_MASK_FILE_SIZE).unwrap();
+
+        let result = validate_mask_path(file_path.to_str().unwrap()).await;
+        assert!(
+            result.is_ok(),
+            "Mask exactly at the mask-specific limit should be accepted"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_mask_path_under_general_limit_but_over_mask_limit() {
+        // Prove validate_mask_path is stricter than validate_input_path: a file
+        // between 4 MiB and 25 MiB passes the general check but must fail the
+        // mask-specific one.
+        let dir = std::env::temp_dir().join("sandbox-test-mask-vs-general");
+        fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("mask.png");
+
+        let file = fs::File::create(&file_path).unwrap();
+        file.set_len(10 * 1024 * 1024).unwrap(); // 10 MiB
+
+        assert!(validate_input_path(file_path.to_str().unwrap())
+            .await
+            .is_ok());
+        assert!(validate_mask_path(file_path.to_str().unwrap())
+            .await
+            .is_err());
 
         let _ = fs::remove_dir_all(&dir);
     }

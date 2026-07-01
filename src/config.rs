@@ -57,6 +57,7 @@ pub struct AppConfig {
 
 impl AppConfig {
     /// Load configuration from environment variables only.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn from_env() -> Result<Self> {
         ConfigFile::from_env_vars()?.finalize()
     }

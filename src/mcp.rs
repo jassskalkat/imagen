@@ -33,7 +33,7 @@ impl ImagenServer {
     /// Generate images from a text prompt using AI.
     #[tool(
         name = "generate_image",
-        description = "Generate one or more images from a text prompt. Returns a job ID for tracking and a cost estimate."
+        description = "Queue generation of one or more images from a text prompt. Returns a job ID and cost estimate immediately; the job runs in the background — poll check_job for status and results."
     )]
     async fn generate_image(&self, Parameters(input): Parameters<GenerateImageInput>) -> String {
         match crate::tools::generate_image::run(&self.state, input).await {
@@ -45,7 +45,7 @@ impl ImagenServer {
     /// Edit an existing image using AI with a text prompt.
     #[tool(
         name = "edit_image",
-        description = "Edit an existing image using a text prompt. Optionally provide a mask to control which areas are edited. Returns a job ID and starts an edit session for multi-turn edits."
+        description = "Queue an edit of an existing image using a text prompt. Optionally provide a mask to control which areas are edited. Returns a job ID and a session ID immediately; the edit runs in the background — poll check_job for status and results before using the session for continue_edit_session."
     )]
     async fn edit_image(&self, Parameters(input): Parameters<EditImageInput>) -> String {
         match crate::tools::edit_image::run(&self.state, input).await {
@@ -57,7 +57,7 @@ impl ImagenServer {
     /// Continue a multi-turn edit session with a new prompt.
     #[tool(
         name = "continue_edit_session",
-        description = "Continue editing an image in an existing session. Uses the last generated image as the source for the next edit."
+        description = "Queue the next edit in a multi-turn session, using the last completed image as the source. Returns a job ID immediately; the edit runs in the background — poll check_job for status and results. Fails if the session's previous edit has not finished yet."
     )]
     async fn continue_edit_session(
         &self,
@@ -72,7 +72,7 @@ impl ImagenServer {
     /// Check the status and results of an image generation or edit job.
     #[tool(
         name = "check_job",
-        description = "Check the status of a previously submitted job. If completed, returns artifact paths and optionally inline base64 image data."
+        description = "Check the status of a submitted job (queued, running, completed, or failed). Poll this after generate_image, edit_image, or continue_edit_session until the status is completed or failed. Completed jobs include artifact paths and optionally inline base64 image data."
     )]
     async fn check_job(&self, Parameters(input): Parameters<CheckJobInput>) -> String {
         match crate::tools::check_job::run(&self.state, input).await {
@@ -96,7 +96,7 @@ impl ImagenServer {
     /// Estimate the cost of an image generation or edit operation.
     #[tool(
         name = "estimate_cost",
-        description = "Estimate the cost of generating or editing images based on size, quality, and count parameters."
+        description = "Estimate the cost of generating or editing images based on size, quality, and count parameters. Estimate only; actual provider billing may differ. Based on published per-image pricing as of this server's release and does not reflect real-time provider pricing changes."
     )]
     async fn estimate_cost(&self, Parameters(input): Parameters<EstimateCostInput>) -> String {
         match crate::tools::estimate_cost::run(&self.state, input).await {
