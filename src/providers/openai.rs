@@ -110,8 +110,13 @@ impl ImageProvider for OpenAIProvider {
             "n": n,
             "size": size,
             "quality": quality,
-            "response_format": "b64_json"
         });
+        // response_format is only accepted by dall-e-2/dall-e-3; GPT image
+        // models (gpt-image-1, gpt-image-2, ...) always return base64 images
+        // and reject this parameter per the official API reference.
+        if !model.contains("gpt-image") {
+            body["response_format"] = json!("b64_json");
+        }
         if let Some(ref style) = request.style {
             body["style"] = serde_json::to_value(style).unwrap_or(json!("vivid"));
         }
@@ -215,8 +220,12 @@ impl ImageProvider for OpenAIProvider {
                 let mut form = multipart::Form::new()
                     .text("model", model_owned.to_string())
                     .text("prompt", prompt.clone())
-                    .text("n", n.to_string())
-                    .text("response_format", "b64_json".to_string());
+                    .text("n", n.to_string());
+                // response_format is only accepted by dall-e-2; GPT image
+                // models always return base64 images and reject this parameter.
+                if !model_owned.contains("gpt-image") {
+                    form = form.text("response_format", "b64_json".to_string());
+                }
                 if let Some(ref size) = size {
                     form = form.text("size", size.as_str().to_string());
                 }
