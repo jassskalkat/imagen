@@ -7,11 +7,9 @@ use tracing::{debug, instrument};
 use crate::config::AppConfig;
 use crate::error::{ImagenError, Result};
 use crate::retry::with_retry;
-use crate::types::{
-    EditRequest, GenerateRequest, ImageData, ImageQuality, ProviderResponse, UsageInfo,
-};
+use crate::types::{EditRequest, GenerateRequest, ImageData, ProviderResponse, UsageInfo};
 
-use super::{ImageProvider, ModelInfo};
+use super::{api_quality, api_size, is_dall_e_3, is_gpt_image_model, ImageProvider, ModelInfo};
 
 /// Azure OpenAI image generation provider.
 pub struct AzureProvider {
@@ -44,7 +42,7 @@ impl AzureProvider {
         let api_version = config
             .azure_api_version
             .as_deref()
-            .unwrap_or("2024-06-01")
+            .unwrap_or("2025-04-01-preview")
             .to_string();
         Ok(Self {
             client: Client::builder()
@@ -80,13 +78,26 @@ impl AzureProvider {
                 message: "Missing 'data' in response".into(),
                 status_code: None,
             })?;
-        let images: Vec<ImageData> = data
-            .iter()
-            .map(|item| ImageData {
-                b64_json: item["b64_json"].as_str().unwrap_or_default().to_string(),
+        let mut images = Vec::with_capacity(data.len());
+        for item in data {
+            let b64_json = item["b64_json"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ImagenError::ProviderError {
+                    message: "Image response did not contain b64_json data".into(),
+                    status_code: None,
+                })?;
+            images.push(ImageData {
+                b64_json: b64_json.to_string(),
                 revised_prompt: item["revised_prompt"].as_str().map(|s| s.to_string()),
-            })
-            .collect();
+            });
+        }
+        if images.is_empty() {
+            return Err(ImagenError::ProviderError {
+                message: "Image response contained no images".into(),
+                status_code: None,
+            });
+        }
         let usage = body.get("usage").map(|u| UsageInfo {
             input_tokens: u["input_tokens"].as_u64(),
             output_tokens: u["output_tokens"].as_u64(),
@@ -115,17 +126,9 @@ impl AzureProvider {
 
 fn background_str(bg: &crate::types::ImageBackground) -> &'static str {
     match bg {
+        crate::types::ImageBackground::Transparent => "transparent",
         crate::types::ImageBackground::Opaque => "opaque",
         crate::types::ImageBackground::Auto => "auto",
-    }
-}
-
-fn azure_quality_str(quality: &ImageQuality) -> &'static str {
-    match quality {
-        ImageQuality::Low => "low",
-        ImageQuality::Standard | ImageQuality::Medium => "medium",
-        ImageQuality::Hd | ImageQuality::High => "high",
-        ImageQuality::Auto => "auto",
     }
 }
 
@@ -137,13 +140,13 @@ impl ImageProvider for AzureProvider {
         let size = request
             .size
             .as_ref()
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_else(|| "1024x1024".to_string());
+            .map(|s| api_size(model, s))
+            .unwrap_or_else(|| api_size(model, &crate::types::ImageSize::Auto));
         let quality = request
             .quality
             .as_ref()
-            .map(|q| json!(azure_quality_str(q)))
-            .unwrap_or(json!("medium"));
+            .map(|q| json!(api_quality(model, q)))
+            .unwrap_or(json!("auto"));
         let n = request.n.unwrap_or(1);
 
         let mut body = json!({
@@ -152,16 +155,36 @@ impl ImageProvider for AzureProvider {
             "size": size,
             "quality": quality
         });
-        if let Some(ref style) = request.style {
-            body["style"] = serde_json::to_value(style).unwrap_or(json!("vivid"));
+        if is_dall_e_3(model) {
+            if let Some(ref style) = request.style {
+                body["style"] = serde_json::to_value(style).unwrap_or(json!("vivid"));
+            }
         }
-        if let Some(c) = request.output_compression {
+        if is_gpt_image_model(model) {
+            body["output_format"] = json!(request
+                .format
+                .as_ref()
+                .unwrap_or(&crate::types::OutputFormat::Png)
+                .as_api_str());
+        }
+        if let Some(c) = request
+            .output_compression
+            .filter(|_| is_gpt_image_model(model))
+        {
             body["output_compression"] = json!(c);
         }
-        if let Some(ref bg) = request.background {
-            body["background"] = serde_json::to_value(bg).unwrap_or(json!("auto"));
+        if let Some(bg) = request
+            .background
+            .as_ref()
+            .filter(|_| is_gpt_image_model(model))
+        {
+            body["background"] = json!(bg.as_api_str());
         }
-        if let Some(ref m) = request.moderation {
+        if let Some(m) = request
+            .moderation
+            .as_ref()
+            .filter(|_| is_gpt_image_model(model))
+        {
             body["moderation"] = json!(m);
         }
         if let Some(ref u) = request.user {
@@ -229,10 +252,18 @@ impl ImageProvider for AzureProvider {
         debug!(url = %self.edits_url(), "Sending edit request to Azure");
         let url = self.edits_url();
         let model_owned = model.to_string();
-        let size = request.size.clone();
+        let size = request.size.as_ref().map(|size| api_size(model, size));
         let prompt = request.prompt.clone();
         let n = request.n.unwrap_or(1);
         let output_compression = request.output_compression;
+        let format = request
+            .format
+            .clone()
+            .unwrap_or(crate::types::OutputFormat::Png);
+        let quality = request
+            .quality
+            .as_ref()
+            .map(|quality| api_quality(model, quality));
         let background = request.background.clone();
         let moderation = request.moderation.clone();
         let user = request.user.clone();
@@ -244,6 +275,8 @@ impl ImageProvider for AzureProvider {
             let mask_bytes = &mask_bytes;
             let url = &url;
             let size = &size;
+            let format = &format;
+            let quality = &quality;
             let prompt = &prompt;
             let background = &background;
             let moderation = &moderation;
@@ -253,7 +286,11 @@ impl ImageProvider for AzureProvider {
                     .text("prompt", prompt.clone())
                     .text("n", n.to_string());
                 if let Some(ref size) = size {
-                    form = form.text("size", size.as_str().to_string());
+                    form = form.text("size", size.clone());
+                }
+                if is_gpt_image_model(model_owned) {
+                    form = form.text("output_format", format.as_api_str().to_string());
+                    form = form.text("quality", quality.unwrap_or("auto").to_string());
                 }
                 if all_image_bytes.len() == 1 {
                     let (ref bytes, ref filename) = all_image_bytes[0];
@@ -270,13 +307,19 @@ impl ImageProvider for AzureProvider {
                     let part = multipart::Part::bytes(bytes.clone()).file_name(filename.clone());
                     form = form.part("mask", part);
                 }
-                if let Some(c) = output_compression {
+                if let Some(c) = output_compression.filter(|_| is_gpt_image_model(model_owned)) {
                     form = form.text("output_compression", c.to_string());
                 }
-                if let Some(ref bg) = *background {
+                if let Some(bg) = background
+                    .as_ref()
+                    .filter(|_| is_gpt_image_model(model_owned))
+                {
                     form = form.text("background", background_str(bg).to_string());
                 }
-                if let Some(ref m) = *moderation {
+                if let Some(m) = moderation
+                    .as_ref()
+                    .filter(|_| is_gpt_image_model(model_owned))
+                {
                     form = form.text("moderation", m.clone());
                 }
                 if let Some(ref u) = *user {
@@ -301,8 +344,8 @@ impl ImageProvider for AzureProvider {
 
     fn get_models(&self) -> Vec<ModelInfo> {
         vec![ModelInfo {
-            id: "gpt-image-2".to_string(),
-            name: "GPT Image 2 (Azure)".to_string(),
+            id: "gpt-image-2.5-sunburst".to_string(),
+            name: "GPT Image 2.5 Sunburst (Azure)".to_string(),
             supports_editing: true,
             max_images: 10,
         }]
@@ -324,7 +367,7 @@ mod tests {
             azure_endpoint: Some("https://my-resource.openai.azure.com".into()),
             azure_deployment_name: Some("gpt-image-2".into()),
             azure_api_key: Some("test-key".into()),
-            azure_api_version: Some("2024-06-01".into()),
+            azure_api_version: Some("2025-04-01-preview".into()),
             openai_api_key: None,
             openai_org_id: None,
             output_dir: "/tmp/test".into(),
@@ -338,11 +381,11 @@ mod tests {
         let provider = AzureProvider::new(&test_config()).unwrap();
         assert_eq!(
             provider.generations_url(),
-            "https://my-resource.openai.azure.com/openai/deployments/gpt-image-2/images/generations?api-version=2024-06-01"
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-image-2/images/generations?api-version=2025-04-01-preview"
         );
         assert_eq!(
             provider.edits_url(),
-            "https://my-resource.openai.azure.com/openai/deployments/gpt-image-2/images/edits?api-version=2024-06-01"
+            "https://my-resource.openai.azure.com/openai/deployments/gpt-image-2/images/edits?api-version=2025-04-01-preview"
         );
     }
 
@@ -358,7 +401,7 @@ mod tests {
         let provider = AzureProvider::new(&test_config()).unwrap();
         let models = provider.get_models();
         assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "gpt-image-2");
+        assert_eq!(models[0].id, "gpt-image-2.5-sunburst");
         assert!(models[0].supports_editing);
         assert_eq!(models[0].max_images, 10);
     }
