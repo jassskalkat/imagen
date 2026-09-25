@@ -4,9 +4,10 @@ use tracing::{info, instrument, warn};
 
 use crate::error::ImagenError;
 use crate::jobs::JobKind;
+use crate::providers::{validate_request_options, RequestOptions};
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
-use crate::tools::parse::{parse_background, parse_compression, parse_moderation};
+use crate::tools::parse::{parse_background, parse_compression, parse_format, parse_moderation};
 use crate::types::EditRequest;
 
 /// Input parameters for the continue_edit_session tool.
@@ -20,7 +21,9 @@ pub struct ContinueEditSessionInput {
     pub mask_path: Option<String>,
     /// Output compression percentage (0-100).
     pub output_compression: Option<u8>,
-    /// Image background: "opaque" or "auto".
+    /// Output format: "png", "webp", or "jpeg".
+    pub output_format: Option<String>,
+    /// Image background: "transparent", "opaque", or "auto".
     pub background: Option<String>,
     /// Content moderation level: "low" or "auto".
     pub moderation: Option<String>,
@@ -67,6 +70,10 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         Some(m) => Some(parse_moderation(m).map_err(|e| e.to_string())?),
         None => None,
     };
+    let format = match &input.output_format {
+        Some(f) => parse_format(f).map_err(|e| e.to_string())?,
+        None => crate::types::OutputFormat::default(),
+    };
 
     // Look up session
     let session = state
@@ -82,13 +89,13 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
     }
 
     // Validate session's last image still exists and is safe
-    validate_input_path(&session.last_image_path)
+    validate_input_path(&session.last_image_path, &state.config.output_dir)
         .await
         .map_err(|e| format!("Session image no longer valid: {}", e))?;
 
     // Validate mask file if provided
     if let Some(ref mask) = input.mask_path {
-        crate::sandbox::validate_mask_path(mask)
+        crate::sandbox::validate_mask_path(mask, &state.config.output_dir)
             .await
             .map_err(|e| e.to_string())?;
         if !tokio::fs::metadata(mask)
@@ -102,6 +109,19 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
+
+    validate_request_options(RequestOptions {
+        model: &model,
+        size: None,
+        quality: None,
+        format: &format,
+        background: background.as_ref(),
+        style: None,
+        n: 1,
+        output_compression,
+        is_edit: true,
+    })
+    .map_err(|e| e.to_string())?;
 
     // Create the job in Queued state; a background task will run it.
     let job_id = state
@@ -125,7 +145,7 @@ pub async fn run(state: &AppState, input: ContinueEditSessionInput) -> Result<St
         model: Some(model),
         size: None,
         quality: None,
-        format: None,
+        format: Some(format),
         n: Some(1),
         output_compression,
         background,
@@ -245,6 +265,7 @@ mod tests {
             prompt: "Next edit".to_string(),
             mask_path: None,
             output_compression: None,
+            output_format: None,
             background: None,
             moderation: None,
             user: None,
@@ -262,6 +283,7 @@ mod tests {
             prompt: "   ".to_string(),
             mask_path: None,
             output_compression: None,
+            output_format: None,
             background: None,
             moderation: None,
             user: None,
@@ -279,6 +301,7 @@ mod tests {
             prompt: "Apply edits".to_string(),
             mask_path: None,
             output_compression: None,
+            output_format: None,
             background: None,
             moderation: None,
             user: None,
@@ -309,6 +332,7 @@ mod tests {
             prompt: "Apply edits".to_string(),
             mask_path: None,
             output_compression: None,
+            output_format: None,
             background: None,
             moderation: None,
             user: None,
@@ -323,7 +347,9 @@ mod tests {
     #[tokio::test]
     async fn test_successful_continue_completes_async() {
         let state = mock_state("imagen-continue-async-test");
-        let tmp_image = std::env::temp_dir().join("imagen-continue-async-img.png");
+        let state_output = std::path::Path::new(&state.config.output_dir);
+        tokio::fs::create_dir_all(state_output).await.unwrap();
+        let tmp_image = state_output.join("imagen-continue-async-img.png");
         tokio::fs::write(&tmp_image, b"fake image data")
             .await
             .unwrap();
@@ -337,6 +363,7 @@ mod tests {
             prompt: "Apply more edits".to_string(),
             mask_path: None,
             output_compression: None,
+            output_format: None,
             background: None,
             moderation: None,
             user: None,
