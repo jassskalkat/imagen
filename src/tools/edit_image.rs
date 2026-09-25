@@ -4,10 +4,11 @@ use tracing::{info, instrument, warn};
 use uuid::Uuid;
 
 use crate::jobs::JobKind;
+use crate::providers::{validate_request_options, RequestOptions};
 use crate::runtime::state::AppState;
 use crate::sandbox::validate_input_path;
 use crate::tools::parse::{
-    parse_background, parse_compression, parse_moderation, parse_quality, parse_size,
+    parse_background, parse_compression, parse_format, parse_moderation, parse_quality, parse_size,
 };
 use crate::types::EditRequest;
 
@@ -24,13 +25,15 @@ pub struct EditImageInput {
     pub mask_path: Option<String>,
     /// Image size: "1024x1024", "1536x1024", "1024x1536", "auto", or arbitrary "WxH".
     pub size: Option<String>,
-    /// Image quality: "low", "medium", "high", "auto", "standard", or "hd".
+    /// Image quality: "low", "medium", "high", "xhigh", "max", "auto", "standard", or "hd".
     pub quality: Option<String>,
+    /// Output format: "png", "webp", or "jpeg".
+    pub output_format: Option<String>,
     /// Number of images to generate (1-10).
     pub n: Option<u8>,
     /// Output compression percentage (0-100).
     pub output_compression: Option<u8>,
-    /// Image background: "opaque" or "auto".
+    /// Image background: "transparent", "opaque", or "auto".
     pub background: Option<String>,
     /// Content moderation level: "low" or "auto".
     pub moderation: Option<String>,
@@ -48,7 +51,7 @@ pub struct EditImageOutput {
 }
 
 /// Maximum prompt length in bytes accepted by the server.
-const MAX_PROMPT_LEN: usize = 4000;
+const MAX_PROMPT_LEN: usize = 32_000;
 
 /// Execute the edit_image tool logic.
 #[instrument(skip(state), fields(prompt_len = input.prompt.len()))]
@@ -88,10 +91,12 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 
     // Validate all input paths for path traversal and null bytes
     for path in &image_paths {
-        validate_input_path(path).await.map_err(|e| e.to_string())?;
+        validate_input_path(path, &state.config.output_dir)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     if let Some(ref mask) = input.mask_path {
-        crate::sandbox::validate_mask_path(mask)
+        crate::sandbox::validate_mask_path(mask, &state.config.output_dir)
             .await
             .map_err(|e| e.to_string())?;
     }
@@ -126,6 +131,10 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         Some(q) => Some(parse_quality(q).map_err(|e| e.to_string())?),
         None => None,
     };
+    let format = match &input.output_format {
+        Some(f) => parse_format(f).map_err(|e| e.to_string())?,
+        None => crate::types::OutputFormat::default(),
+    };
     let background = match &input.background {
         Some(b) => Some(parse_background(b).map_err(|e| e.to_string())?),
         None => None,
@@ -137,6 +146,19 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
+
+    validate_request_options(RequestOptions {
+        model: &model,
+        size: size.as_ref(),
+        quality: quality.as_ref(),
+        format: &format,
+        background: background.as_ref(),
+        style: None,
+        n,
+        output_compression,
+        is_edit: true,
+    })
+    .map_err(|e| e.to_string())?;
 
     // Create the job in Queued state; a background task will run it.
     let job_id = state
@@ -154,7 +176,7 @@ pub async fn run(state: &AppState, input: EditImageInput) -> Result<String, Stri
         model: Some(model),
         size,
         quality,
-        format: None,
+        format: Some(format),
         n: Some(n),
         output_compression,
         background,
@@ -297,6 +319,7 @@ mod tests {
             mask_path: None,
             size: None,
             quality: None,
+            output_format: None,
             n: None,
             output_compression: None,
             background: None,
@@ -329,14 +352,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_nonexistent_mask_path_returns_error() {
-        let tmp_image = std::env::temp_dir().join("imagen-edit-test-img.png");
+        let state = test_state();
+        let state_output = std::path::Path::new(&state.config.output_dir);
+        tokio::fs::create_dir_all(state_output).await.unwrap();
+        let tmp_image = state_output.join("imagen-edit-test-img.png");
         tokio::fs::write(&tmp_image, b"fake image data")
             .await
             .unwrap();
 
         let mut input = make_input(&tmp_image.to_string_lossy(), "Edit this");
-        input.mask_path = Some("/tmp/nonexistent-imagen-test-mask-xyz.png".to_string());
-        let err = run(&test_state(), input).await.unwrap_err();
+        input.mask_path = Some(
+            state_output
+                .join("nonexistent-imagen-test-mask-xyz.png")
+                .to_string_lossy()
+                .to_string(),
+        );
+        let err = run(&state, input).await.unwrap_err();
         assert!(
             err.contains("not found") || err.contains("does not exist"),
             "Expected 'not found' error, got: {err}"
@@ -362,12 +393,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_successful_edit_completes_async_and_updates_session() {
-        let tmp_image = std::env::temp_dir().join("imagen-edit-async-test-img.png");
+        let state = test_state();
+        let state_output = std::path::Path::new(&state.config.output_dir);
+        tokio::fs::create_dir_all(state_output).await.unwrap();
+        let tmp_image = state_output.join("imagen-edit-async-test-img.png");
         tokio::fs::write(&tmp_image, b"fake image data")
             .await
             .unwrap();
 
-        let state = test_state();
         let input = make_input(&tmp_image.to_string_lossy(), "Edit this");
         let output = run(&state, input).await.unwrap();
         assert!(output.contains("\"status\":\"queued\""));
