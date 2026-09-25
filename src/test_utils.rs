@@ -89,7 +89,7 @@ pub fn mock_config(output_dir: &str) -> AppConfig {
         openai_org_id: None,
         output_dir: output_dir.to_string(),
         max_concurrent_jobs: 2,
-        default_model: "gpt-image-2".into(),
+        default_model: "gpt-image-2.5-sunburst".into(),
     }
 }
 
