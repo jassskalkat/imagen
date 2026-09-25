@@ -2,4 +2,5 @@
 .env
 *.swp
 imagen-output/
+credentials.local.md
 .DS_Store
