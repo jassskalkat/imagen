@@ -70,7 +70,7 @@ mod tests {
             !output.contains("org-secret-id"),
             "Output leaked openai_org_id"
         );
-        assert!(output.contains("gpt-image-2"));
+        assert!(output.contains("mock-model"));
         assert!(output.contains("/tmp/test-output"));
         assert!(output.contains("mock"));
     }
