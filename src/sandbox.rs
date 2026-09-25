@@ -63,14 +63,16 @@ fn resolve_existing_ancestor(path: &Path) -> std::path::PathBuf {
 /// pathological or accidental huge-file inputs.
 pub const MAX_INPUT_FILE_SIZE: u64 = 25 * 1024 * 1024;
 
-/// Validate that an input file path is safe to read.
+/// Validate that an input file path is safe to read from the configured
+/// output directory.
 ///
 /// Checks:
 /// - No null bytes in the path string
 /// - Path does not contain `..` traversal components
 /// - Path exists and is a regular file
 /// - File size does not exceed [`MAX_INPUT_FILE_SIZE`]
-pub async fn validate_input_path(path: &str) -> Result<()> {
+/// - The resolved path remains inside the configured output directory
+pub async fn validate_input_path(path: &str, output_dir: &str) -> Result<()> {
     // Reject null bytes
     if path.contains('\0') {
         return Err(ImagenError::InvalidInput(
@@ -108,6 +110,14 @@ pub async fn validate_input_path(path: &str) -> Result<()> {
         )));
     }
 
+    let resolved = resolve_existing_ancestor(p);
+    let output_base = resolve_existing_ancestor(Path::new(output_dir));
+    if !resolved.starts_with(&output_base) {
+        return Err(ImagenError::InvalidInput(format!(
+            "Path '{path}' is outside the configured output directory '{output_dir}'"
+        )));
+    }
+
     Ok(())
 }
 
@@ -118,8 +128,18 @@ pub const MAX_MASK_FILE_SIZE: u64 = 4 * 1024 * 1024;
 
 /// Validate a mask file the same way as [`validate_input_path`], but against
 /// the stricter [`MAX_MASK_FILE_SIZE`] limit documented for mask uploads.
-pub async fn validate_mask_path(path: &str) -> Result<()> {
-    validate_input_path(path).await?;
+pub async fn validate_mask_path(path: &str, output_dir: &str) -> Result<()> {
+    validate_input_path(path, output_dir).await?;
+
+    if !Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        return Err(ImagenError::InvalidInput(
+            "Mask files must use the PNG format.".to_string(),
+        ));
+    }
 
     // validate_input_path already confirmed the file exists and is a regular
     // file, so this metadata call cannot fail for reasons other than a race
@@ -152,7 +172,7 @@ mod tests {
         let file_path = dir.join("valid.png");
         fs::write(&file_path, b"test").unwrap();
 
-        let result = validate_input_path(file_path.to_str().unwrap()).await;
+        let result = validate_input_path(file_path.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(result.is_ok());
 
         let _ = fs::remove_dir_all(&dir);
@@ -160,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_input_path_null_bytes() {
-        let result = validate_input_path("/tmp/file\0.png").await;
+        let result = validate_input_path("/tmp/file\0.png", "/tmp").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("null bytes"), "Error was: {err}");
@@ -168,7 +188,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_input_path_traversal() {
-        let result = validate_input_path("/tmp/images/../../../etc/passwd").await;
+        let result = validate_input_path("/tmp/images/../../../etc/passwd", "/tmp").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("traversal"), "Error was: {err}");
@@ -176,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_input_path_nonexistent() {
-        let result = validate_input_path("/nonexistent/path/file.png").await;
+        let result = validate_input_path("/nonexistent/path/file.png", "/tmp").await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("does not exist"), "Error was: {err}");
@@ -187,7 +207,7 @@ mod tests {
         let dir = std::env::temp_dir().join("sandbox-test-dir");
         fs::create_dir_all(&dir).unwrap();
 
-        let result = validate_input_path(dir.to_str().unwrap()).await;
+        let result = validate_input_path(dir.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not a regular file"), "Error was: {err}");
@@ -206,7 +226,7 @@ mod tests {
         let file = fs::File::create(&file_path).unwrap();
         file.set_len(MAX_INPUT_FILE_SIZE + 1).unwrap();
 
-        let result = validate_input_path(file_path.to_str().unwrap()).await;
+        let result = validate_input_path(file_path.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -226,7 +246,7 @@ mod tests {
         let file = fs::File::create(&file_path).unwrap();
         file.set_len(MAX_INPUT_FILE_SIZE).unwrap();
 
-        let result = validate_input_path(file_path.to_str().unwrap()).await;
+        let result = validate_input_path(file_path.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(
             result.is_ok(),
             "File exactly at the limit should be accepted"
@@ -246,7 +266,7 @@ mod tests {
         let file = fs::File::create(&file_path).unwrap();
         file.set_len(MAX_MASK_FILE_SIZE + 1).unwrap();
 
-        let result = validate_mask_path(file_path.to_str().unwrap()).await;
+        let result = validate_mask_path(file_path.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -266,7 +286,7 @@ mod tests {
         let file = fs::File::create(&file_path).unwrap();
         file.set_len(MAX_MASK_FILE_SIZE).unwrap();
 
-        let result = validate_mask_path(file_path.to_str().unwrap()).await;
+        let result = validate_mask_path(file_path.to_str().unwrap(), dir.to_str().unwrap()).await;
         assert!(
             result.is_ok(),
             "Mask exactly at the mask-specific limit should be accepted"
@@ -287,12 +307,16 @@ mod tests {
         let file = fs::File::create(&file_path).unwrap();
         file.set_len(10 * 1024 * 1024).unwrap(); // 10 MiB
 
-        assert!(validate_input_path(file_path.to_str().unwrap())
-            .await
-            .is_ok());
-        assert!(validate_mask_path(file_path.to_str().unwrap())
-            .await
-            .is_err());
+        assert!(
+            validate_input_path(file_path.to_str().unwrap(), dir.to_str().unwrap())
+                .await
+                .is_ok()
+        );
+        assert!(
+            validate_mask_path(file_path.to_str().unwrap(), dir.to_str().unwrap())
+                .await
+                .is_err()
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -333,5 +357,23 @@ mod tests {
         assert!(result.is_err());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn test_validate_input_path_existing_file_outside_rejected() {
+        let output_dir = std::env::temp_dir().join("sandbox-test-input-boundary");
+        let outside_dir = std::env::temp_dir().join("sandbox-test-input-outside");
+        fs::create_dir_all(&output_dir).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        let outside_file = outside_dir.join("outside.png");
+        fs::write(&outside_file, b"not a secret").unwrap();
+
+        let result =
+            validate_input_path(outside_file.to_str().unwrap(), output_dir.to_str().unwrap()).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("outside"));
+
+        let _ = fs::remove_dir_all(&output_dir);
+        let _ = fs::remove_dir_all(&outside_dir);
     }
 }
