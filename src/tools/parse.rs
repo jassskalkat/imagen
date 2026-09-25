@@ -2,7 +2,7 @@ use crate::error::ImagenError;
 use crate::types::{ImageBackground, ImageQuality, ImageSize, ImageStyle, OutputFormat};
 
 /// Parse a size string into an ImageSize enum.
-/// Accepts standard sizes, "auto", or arbitrary "WxH" per gpt-image-2's documented
+/// Accepts standard sizes, "auto", or arbitrary "WxH" per GPT Image's documented
 /// constraints: both dimensions divisible by 16, max edge length 3840px, aspect
 /// ratio between 1:3 and 3:1, and total pixel count between 655,360 and 8,294,400.
 pub fn parse_size(s: &str) -> Result<ImageSize, ImagenError> {
@@ -15,7 +15,7 @@ pub fn parse_size(s: &str) -> Result<ImageSize, ImagenError> {
     }
 }
 
-/// Minimum total pixel count accepted for a custom size, per gpt-image-2's
+/// Minimum total pixel count accepted for a custom size, per GPT Image's
 /// documented constraints (official OpenAI/Azure docs: 655,360–8,294,400 px).
 const MIN_CUSTOM_SIZE_PIXELS: u64 = 655_360;
 /// Maximum total pixel count accepted for a custom size (see above).
@@ -90,9 +90,11 @@ pub fn parse_quality(s: &str) -> Result<ImageQuality, ImagenError> {
         "low" => Ok(ImageQuality::Low),
         "medium" => Ok(ImageQuality::Medium),
         "high" => Ok(ImageQuality::High),
+        "xhigh" => Ok(ImageQuality::XHigh),
+        "max" => Ok(ImageQuality::Max),
         "auto" => Ok(ImageQuality::Auto),
         other => Err(ImagenError::InvalidInput(format!(
-            "Invalid quality: '{other}'. Use low, medium, high, auto, standard, or hd."
+            "Invalid quality: '{other}'. Use low, medium, high, xhigh, max, auto, standard, or hd."
         ))),
     }
 }
@@ -123,10 +125,11 @@ pub fn parse_format(s: &str) -> Result<OutputFormat, ImagenError> {
 /// Parse a background string into an ImageBackground enum.
 pub fn parse_background(s: &str) -> Result<ImageBackground, ImagenError> {
     match s {
+        "transparent" => Ok(ImageBackground::Transparent),
         "opaque" => Ok(ImageBackground::Opaque),
         "auto" => Ok(ImageBackground::Auto),
         other => Err(ImagenError::InvalidInput(format!(
-            "Invalid background: '{other}'. Use opaque or auto."
+            "Invalid background: '{other}'. Use transparent, opaque, or auto."
         ))),
     }
 }
@@ -269,6 +272,8 @@ mod tests {
         assert_eq!(parse_quality("low").unwrap(), ImageQuality::Low);
         assert_eq!(parse_quality("medium").unwrap(), ImageQuality::Medium);
         assert_eq!(parse_quality("high").unwrap(), ImageQuality::High);
+        assert_eq!(parse_quality("xhigh").unwrap(), ImageQuality::XHigh);
+        assert_eq!(parse_quality("max").unwrap(), ImageQuality::Max);
         assert_eq!(parse_quality("auto").unwrap(), ImageQuality::Auto);
     }
 
@@ -312,13 +317,17 @@ mod tests {
 
     #[test]
     fn test_parse_background_valid() {
+        assert_eq!(
+            parse_background("transparent").unwrap(),
+            ImageBackground::Transparent
+        );
         assert_eq!(parse_background("opaque").unwrap(), ImageBackground::Opaque);
         assert_eq!(parse_background("auto").unwrap(), ImageBackground::Auto);
     }
 
     #[test]
     fn test_parse_background_invalid() {
-        let result = parse_background("transparent");
+        let result = parse_background("gradient");
         assert!(result.is_err());
         assert!(result
             .unwrap_err()
