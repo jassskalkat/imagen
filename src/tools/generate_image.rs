@@ -4,12 +4,13 @@ use tracing::{info, instrument, warn};
 
 use crate::cost;
 use crate::jobs::JobKind;
+use crate::providers::{validate_request_options, RequestOptions};
 use crate::runtime::state::AppState;
 use crate::tools::parse::{
     parse_background, parse_compression, parse_format, parse_moderation, parse_quality, parse_size,
     parse_style,
 };
-use crate::types::{GenerateRequest, ImageQuality, ImageSize, ImageStyle, OutputFormat};
+use crate::types::{GenerateRequest, ImageQuality, ImageSize, OutputFormat};
 
 /// Input parameters for the generate_image tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -18,9 +19,9 @@ pub struct GenerateImageInput {
     pub prompt: String,
     /// Image size: "1024x1024", "1536x1024", "1024x1536", "auto", or arbitrary "WxH".
     pub size: Option<String>,
-    /// Image quality: "low", "medium", "high", "auto", "standard", or "hd".
+    /// Image quality: "low", "medium", "high", "xhigh", "max", "auto", "standard", or "hd".
     pub quality: Option<String>,
-    /// Image style: "vivid" or "natural". Ignored for gpt-image-2.
+    /// Image style: "vivid" or "natural". Supported only for dall-e-3.
     pub style: Option<String>,
     /// Output format: "png", "webp", or "jpeg".
     pub output_format: Option<String>,
@@ -28,7 +29,7 @@ pub struct GenerateImageInput {
     pub n: Option<u8>,
     /// Output compression percentage (0-100).
     pub output_compression: Option<u8>,
-    /// Image background: "opaque" or "auto".
+    /// Image background: "transparent", "opaque", or "auto".
     pub background: Option<String>,
     /// Content moderation level: "low" or "auto".
     pub moderation: Option<String>,
@@ -45,7 +46,7 @@ pub struct GenerateImageOutput {
 }
 
 /// Maximum prompt length in bytes accepted by the server.
-const MAX_PROMPT_LEN: usize = 4000;
+const MAX_PROMPT_LEN: usize = 32_000;
 
 /// Execute the generate_image tool logic.
 #[instrument(skip(state), fields(prompt_len = input.prompt.len(), n = input.n.unwrap_or(1)))]
@@ -68,8 +69,8 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         None => ImageQuality::default(),
     };
     let style = match &input.style {
-        Some(s) => parse_style(s).map_err(|e| e.to_string())?,
-        None => ImageStyle::default(),
+        Some(s) => Some(parse_style(s).map_err(|e| e.to_string())?),
+        None => None,
     };
     let format = match &input.output_format {
         Some(f) => parse_format(f).map_err(|e| e.to_string())?,
@@ -88,12 +89,22 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         None => None,
     };
     let n = input.n.unwrap_or(1);
-    if n == 0 || n > 10 {
-        return Err("n must be between 1 and 10.".to_string());
-    }
 
     let provider_name = state.provider.provider_name();
     let model = state.config.default_model.clone();
+
+    validate_request_options(RequestOptions {
+        model: &model,
+        size: Some(&size),
+        quality: Some(&quality),
+        format: &format,
+        background: background.as_ref(),
+        style: style.as_ref(),
+        n,
+        output_compression,
+        is_edit: false,
+    })
+    .map_err(|e| e.to_string())?;
 
     // Create the job in Queued state. A background task will acquire a
     // concurrency permit, transition it to Running, call the provider, and
@@ -105,13 +116,6 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
 
     info!(job_id = %job_id, model = %model, "generate_image job queued");
 
-    // For gpt-image-2, style is not supported - suppress it
-    let effective_style = if model.contains("gpt-image") {
-        None
-    } else {
-        Some(style)
-    };
-
     let estimate = cost::estimate_cost(provider_name, &model, &size, &quality, n);
 
     // Build the provider request
@@ -121,7 +125,7 @@ pub async fn run(state: &AppState, input: GenerateImageInput) -> Result<String, 
         size: Some(size),
         quality: Some(quality),
         format: Some(format.clone()),
-        style: effective_style,
+        style,
         n: Some(n),
         output_compression,
         background,
