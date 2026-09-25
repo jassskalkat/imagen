@@ -37,18 +37,21 @@ impl ImageSize {
 #[serde(rename_all = "lowercase")]
 pub enum ImageQuality {
     #[default]
+    Auto,
     Standard,
     Hd,
     Low,
     Medium,
     High,
-    Auto,
+    XHigh,
+    Max,
 }
 
-/// Image background setting for gpt-image-2.
+/// Image background setting for GPT Image models.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageBackground {
+    Transparent,
     Opaque,
     Auto,
 }
@@ -64,6 +67,15 @@ pub enum OutputFormat {
 }
 
 impl OutputFormat {
+    /// Return the format string expected by the image APIs.
+    pub fn as_api_str(&self) -> &'static str {
+        match self {
+            OutputFormat::Png => "png",
+            OutputFormat::Webp => "webp",
+            OutputFormat::Jpeg => "jpeg",
+        }
+    }
+
     /// Return the file extension for this format.
     pub fn extension(&self) -> &'static str {
         match self {
@@ -222,5 +234,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(&ImageQuality::High).unwrap(), "high");
         assert_eq!(serde_json::to_value(&ImageQuality::Auto).unwrap(), "auto");
+        assert_eq!(serde_json::to_value(&ImageQuality::XHigh).unwrap(), "xhigh");
+        assert_eq!(serde_json::to_value(&ImageQuality::Max).unwrap(), "max");
     }
 }
