@@ -1,0 +1,68 @@
+{
+  "skill_name": "imagen-mcp-coding-agent",
+  "evals": [
+    {
+      "id": 1,
+      "query": "Set up Imagen MCP with my Azure OpenAI deployment and generate a 16:9 PNG.",
+      "should_trigger": true
+    },
+    {
+      "id": 2,
+      "query": "Use the Imagen MCP to create three concept images and poll until they finish.",
+      "should_trigger": true
+    },
+    {
+      "id": 3,
+      "query": "Edit this PNG with Imagen, then continue the edit session to make it warmer.",
+      "should_trigger": true
+    },
+    {
+      "id": 4,
+      "query": "Why does my Imagen MCP Azure request say DeploymentNotFound?",
+      "should_trigger": true
+    },
+    {
+      "id": 5,
+      "query": "Validate the Imagen Rust MCP installation and its release build.",
+      "should_trigger": true
+    },
+    {
+      "id": 6,
+      "query": "Write a Rust function that resizes a local image.",
+      "should_trigger": false
+    },
+    {
+      "id": 7,
+      "query": "Explain Azure networking in general.",
+      "should_trigger": false
+    },
+    {
+      "id": 8,
+      "query": "Choose a color palette for a landing page.",
+      "should_trigger": false
+    }
+  ],
+  "functional_evals": [
+    {
+      "id": 1,
+      "name": "Configure Azure and generate",
+      "given": "A connected Imagen MCP with Azure variables configured",
+      "when": "The agent receives a request to generate an image",
+      "then": "It checks configuration, uses the deployed model contract, polls check_job, and reports only completed artifacts or explicit errors."
+    },
+    {
+      "id": 2,
+      "name": "Edit and continue safely",
+      "given": "A source image inside IMAGEN_OUTPUT_DIR",
+      "when": "The agent performs two sequential edits",
+      "then": "It waits for the first job, uses the returned session_id, rejects unsafe paths, and reports the final artifact."
+    },
+    {
+      "id": 3,
+      "name": "Separate static and live evidence",
+      "given": "A skill validation run without provider credentials",
+      "when": "The agent reports readiness",
+      "then": "It reports structure and Rust checks as static evidence and labels live provider authentication as unexecuted."
+    }
+  ]
+}
