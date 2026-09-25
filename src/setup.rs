@@ -24,7 +24,7 @@ pub fn run() -> Result<(), String> {
         provider: Some(provider.clone()),
         output_dir: Some(default_output_dir()),
         max_concurrent_jobs: Some(4),
-        default_model: Some("gpt-image-2".to_string()),
+        default_model: Some("gpt-image-2.5-sunburst".to_string()),
         ..Default::default()
     };
 
@@ -41,10 +41,11 @@ pub fn run() -> Result<(), String> {
                 azure_endpoint_default.as_deref().unwrap_or("your-resource"),
             )?;
             config.azure_endpoint = Some(normalize_azure_endpoint(&endpoint_or_resource));
-            config.azure_deployment_name =
-                Some(azure_deployment_default.unwrap_or_else(|| "gpt-image-2".to_string()));
+            config.azure_deployment_name = Some(
+                azure_deployment_default.unwrap_or_else(|| "gpt-image-2.5-sunburst".to_string()),
+            );
             config.azure_api_version =
-                Some(azure_api_version_default.unwrap_or_else(|| "2024-06-01".to_string()));
+                Some(azure_api_version_default.unwrap_or_else(|| "2025-04-01-preview".to_string()));
         }
     }
 
