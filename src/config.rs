@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use crate::error::{ImagenError, Result};
 use serde::{Deserialize, Serialize};
 
-const DEFAULT_OUTPUT_DIR: &str = "./imagen-output";
 const DEFAULT_MODEL: &str = "gpt-image-2.5-sunburst";
 const DEFAULT_MAX_CONCURRENT_JOBS: usize = 4;
 
@@ -206,8 +205,7 @@ impl ConfigFile {
     /// Convert the persisted snapshot into the runtime config and validate it.
     pub(crate) fn finalize(self) -> Result<AppConfig> {
         let provider = self.provider.unwrap_or(Provider::OpenAI);
-        let output_dir =
-            sanitize(self.output_dir).unwrap_or_else(|| DEFAULT_OUTPUT_DIR.to_string());
+        let output_dir = sanitize(self.output_dir).unwrap_or_else(default_output_dir);
         let max_concurrent_jobs = self
             .max_concurrent_jobs
             .unwrap_or(DEFAULT_MAX_CONCURRENT_JOBS);

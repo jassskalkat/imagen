@@ -180,6 +180,9 @@ configuration, MCP client setup, the complete tool workflow, polling and edit
 sessions, model options, sandbox rules, and validation commands. Distribute the
 skill directory without credentials, local config files, or generated images.
 
+For a short installation walkthrough, see
+[CODING-AGENT-SETUP.md](CODING-AGENT-SETUP.md).
+
 ## Usage Examples
 
 ### Generate an Image
