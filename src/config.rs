@@ -4,7 +4,7 @@ use crate::error::{ImagenError, Result};
 use serde::{Deserialize, Serialize};
 
 const DEFAULT_OUTPUT_DIR: &str = "./imagen-output";
-const DEFAULT_MODEL: &str = "gpt-image-2";
+const DEFAULT_MODEL: &str = "gpt-image-2.5-sunburst";
 const DEFAULT_MAX_CONCURRENT_JOBS: usize = 4;
 
 /// Persistent configuration written by `imagen setup` and loaded at startup.
@@ -379,7 +379,7 @@ mod tests {
         assert_eq!(config.openai_api_key, Some("sk-test-key".into()));
         assert_eq!(config.output_dir, "/tmp/imagen-test");
         assert_eq!(config.max_concurrent_jobs, 4);
-        assert_eq!(config.default_model, "gpt-image-2");
+        assert_eq!(config.default_model, "gpt-image-2.5-sunburst");
 
         // Clean up
         std::env::remove_var("IMAGEN_PROVIDER");
@@ -474,7 +474,7 @@ mod tests {
             azure_endpoint: Some("https://example.openai.azure.com".into()),
             azure_deployment_name: Some("gpt-image-2".into()),
             azure_api_key: Some("azure-key-123".into()),
-            azure_api_version: Some("2024-06-01".into()),
+            azure_api_version: Some("2025-04-01-preview".into()),
             openai_api_key: None,
             openai_org_id: None,
             output_dir: std::env::temp_dir()
@@ -535,7 +535,7 @@ mod tests {
             azure_endpoint: Some("https://example.openai.azure.com".into()),
             azure_deployment_name: Some("deploy".into()),
             azure_api_key: Some("azure-key".into()),
-            azure_api_version: Some("2024-06-01".into()),
+            azure_api_version: Some("2025-04-01-preview".into()),
             openai_api_key: None,
             openai_org_id: None,
             output_dir: Some("/tmp/base-output".into()),
