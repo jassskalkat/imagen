@@ -59,10 +59,10 @@ You can override that path with `IMAGEN_CONFIG_FILE`.
 | `AZURE_OPENAI_ENDPOINT` | Yes (Azure) | - | Azure OpenAI endpoint URL |
 | `AZURE_OPENAI_DEPLOYMENT` | Yes (Azure) | - | Azure OpenAI deployment name |
 | `AZURE_OPENAI_API_KEY` | Yes (Azure) | - | Azure OpenAI API key |
-| `AZURE_OPENAI_API_VERSION` | No | `2024-06-01` | Azure OpenAI API version |
+| `AZURE_OPENAI_API_VERSION` | No | `2025-04-01-preview` | Azure OpenAI API version |
 | `IMAGEN_OUTPUT_DIR` | No | `./imagen-output` | Directory for saved image artifacts |
 | `IMAGEN_MAX_CONCURRENT_JOBS` | No | `4` | Maximum concurrent generation jobs |
-| `IMAGEN_DEFAULT_MODEL` | No | `gpt-image-2` | Default model for generation |
+| `IMAGEN_DEFAULT_MODEL` | No | `gpt-image-2.5-sunburst` | Default model for generation |
 
 ## Docker
 
@@ -90,7 +90,7 @@ For Azure:
 docker run --rm -i \
   -e IMAGEN_PROVIDER=azure \
   -e AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com \
-  -e AZURE_OPENAI_DEPLOYMENT=gpt-image-2 \
+  -e AZURE_OPENAI_DEPLOYMENT=gpt-image-2.5-sunburst \
   -e AZURE_OPENAI_API_KEY=your-azure-key \
   -v /path/to/output:/data/output \
   imagen
@@ -172,6 +172,14 @@ Or using Docker:
 }
 ```
 
+## Coding-agent skill
+
+The public coding-agent skill is distributed at
+`skills/imagen-mcp-coding-agent/SKILL.md`. It documents OpenAI and Azure
+configuration, MCP client setup, the complete tool workflow, polling and edit
+sessions, model options, sandbox rules, and validation commands. Distribute the
+skill directory without credentials, local config files, or generated images.
+
 ## Usage Examples
 
 ### Generate an Image
@@ -182,16 +190,17 @@ Request the `generate_image` tool with a prompt:
 {
   "prompt": "A serene mountain lake at sunset with reflections",
   "size": "1536x1024",
-  "quality": "hd",
-  "style": "natural",
+  "quality": "high",
   "output_format": "png",
+  "background": "auto",
   "n": 1
 }
 ```
 
-The server returns a job ID and cost estimate immediately (`status: "queued"`). The
-generation runs in the background — poll `check_job` until the status is `completed`
-or `failed`.
+The server returns a job ID and a cost-estimate envelope immediately
+(`status: "queued"`). Exact GPT Image cost is provider-usage dependent; the
+estimate is `null` until usage is available. The generation runs in the
+background — poll `check_job` until the status is `completed` or `failed`.
 
 ### Edit an Image
 
@@ -200,9 +209,10 @@ Use `edit_image` to modify an existing image:
 ```json
 {
   "prompt": "Add a wooden dock extending into the lake",
-  "image_path": "/path/to/lake-image.png",
+  "image_path": "./imagen-output/source/lake-image.png",
   "size": "1024x1024",
-  "quality": "standard"
+  "quality": "high",
+  "output_format": "png"
 }
 ```
 
@@ -230,8 +240,10 @@ file paths and optional base64 previews once the job reaches `completed`.
 ### Path Sandboxing
 
 All file operations (reading input images, writing output artifacts) are sandboxed to the
-configured `IMAGEN_OUTPUT_DIR`. Path traversal attempts (e.g., `../../etc/passwd`) are
-detected and rejected before any I/O occurs. Symlinks that escape the sandbox are also blocked.
+configured `IMAGEN_OUTPUT_DIR`. Source images and masks must be copied into that directory
+before editing. Path traversal attempts, existing files outside the directory, and symlinks
+that escape the sandbox are rejected before provider I/O. Masks must be PNG files and are
+limited to 4 MiB.
 
 ### Secret Safety
 
