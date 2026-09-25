@@ -10,18 +10,16 @@ pub struct CostEstimate {
     pub size: String,
     pub quality: String,
     pub count: u8,
-    pub estimated_cost_usd: f64,
+    pub estimated_cost_usd: Option<f64>,
+    pub note: String,
 }
 
-/// Estimate the cost for a gpt-image-2 generation request.
+/// Return a cost estimate envelope without inventing a price.
 ///
-/// Pricing is based on known rates:
-/// - Low 1024x1024: ~$0.01 per image
-/// - Standard/Medium 1024x1024: ~$0.02 per image
-/// - HD/High 1024x1024: ~$0.04 per image
-/// - Auto: ~$0.02 per image (same as medium/standard)
-/// - Larger sizes scale proportionally (1.5x for landscape/portrait)
-/// - Custom sizes scale based on pixel count relative to 1024x1024 baseline
+/// OpenAI's current GPT Image pricing is token-based and the official
+/// documentation directs callers to the image-generation calculator. Exact
+/// cost is available after the provider returns usage, so this tool reports
+/// `null` until a usage-aware estimate is implemented.
 pub fn estimate_cost(
     provider: &str,
     model: &str,
@@ -29,34 +27,7 @@ pub fn estimate_cost(
     quality: &ImageQuality,
     count: u8,
 ) -> CostEstimate {
-    let base_cost = match quality {
-        ImageQuality::Standard => 0.02,
-        ImageQuality::Hd => 0.04,
-        ImageQuality::Low => 0.01,
-        ImageQuality::Medium => 0.02,
-        ImageQuality::High => 0.04,
-        ImageQuality::Auto => 0.02,
-    };
-
-    let size_multiplier = match size {
-        ImageSize::Square => 1.0,
-        ImageSize::Landscape => 1.5,
-        ImageSize::Portrait => 1.5,
-        ImageSize::Auto => 1.0,
-        ImageSize::Custom(s) => custom_size_multiplier(s),
-    };
-
-    let per_image = base_cost * size_multiplier;
-    let total = per_image * count as f64;
-
-    let quality_str = match quality {
-        ImageQuality::Standard => "standard",
-        ImageQuality::Hd => "hd",
-        ImageQuality::Low => "low",
-        ImageQuality::Medium => "medium",
-        ImageQuality::High => "high",
-        ImageQuality::Auto => "auto",
-    };
+    let quality_str = quality.as_api_str();
 
     CostEstimate {
         provider: provider.to_string(),
@@ -64,21 +35,9 @@ pub fn estimate_cost(
         size: size.as_str().to_string(),
         quality: quality_str.to_string(),
         count,
-        estimated_cost_usd: total,
+        estimated_cost_usd: None,
+        note: "Exact image cost depends on provider usage and current pricing. Use the official image-generation calculator; this runtime does not yet return a post-generation cost.".to_string(),
     }
-}
-
-/// Calculate the size multiplier for a custom WxH string relative to 1024x1024.
-fn custom_size_multiplier(size_str: &str) -> f64 {
-    let baseline_pixels: f64 = 1024.0 * 1024.0;
-    let parts: Vec<&str> = size_str.split('x').collect();
-    if parts.len() == 2 {
-        if let (Ok(w), Ok(h)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-            let pixels = w * h;
-            return (pixels / baseline_pixels).max(1.0);
-        }
-    }
-    1.0
 }
 
 #[cfg(test)]
@@ -94,7 +53,7 @@ mod tests {
             &ImageQuality::Standard,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.02).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -106,7 +65,7 @@ mod tests {
             &ImageQuality::Hd,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.04).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -118,7 +77,7 @@ mod tests {
             &ImageQuality::Hd,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.06).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -130,7 +89,7 @@ mod tests {
             &ImageQuality::Standard,
             3,
         );
-        assert!((est.estimated_cost_usd - 0.06).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -147,7 +106,7 @@ mod tests {
         assert_eq!(est.size, "1024x1536");
         assert_eq!(est.quality, "hd");
         assert_eq!(est.count, 2);
-        assert!((est.estimated_cost_usd - 0.12).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -159,7 +118,7 @@ mod tests {
             &ImageQuality::Standard,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.02).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.size, "auto");
     }
 
@@ -172,7 +131,7 @@ mod tests {
             &ImageQuality::Standard,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.03).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -184,7 +143,7 @@ mod tests {
             &ImageQuality::Standard,
             2,
         );
-        assert!((est.estimated_cost_usd - 0.06).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -196,7 +155,7 @@ mod tests {
             &ImageQuality::Hd,
             4,
         );
-        assert!((est.estimated_cost_usd - 0.16).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.count, 4);
     }
 
@@ -209,7 +168,7 @@ mod tests {
             &ImageQuality::Low,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.01).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.quality, "low");
     }
 
@@ -222,7 +181,7 @@ mod tests {
             &ImageQuality::Medium,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.02).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.quality, "medium");
     }
 
@@ -235,7 +194,7 @@ mod tests {
             &ImageQuality::High,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.04).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.quality, "high");
     }
 
@@ -248,7 +207,7 @@ mod tests {
             &ImageQuality::Auto,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.02).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
         assert_eq!(est.quality, "auto");
     }
 
@@ -263,8 +222,7 @@ mod tests {
             1,
         );
         assert_eq!(est.size, "1920x1088");
-        let expected = 0.02 * (1920.0 * 1088.0) / (1024.0 * 1024.0);
-        assert!((est.estimated_cost_usd - expected).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 
     #[test]
@@ -277,6 +235,6 @@ mod tests {
             &ImageQuality::Standard,
             1,
         );
-        assert!((est.estimated_cost_usd - 0.02).abs() < 1e-10);
+        assert!(est.estimated_cost_usd.is_none());
     }
 }
